@@ -2,17 +2,26 @@ import os
 import re
 import requests
 import urllib.parse
-import psycopg2
 from datetime import datetime
 from flask import Flask, render_template, request, jsonify, session
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
 import jwt
 from functools import wraps
+import json
 
 app = Flask(__name__, template_folder='.')
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
 CORS(app, supports_credentials=True)
+
+# Try to import psycopg2 with fallback
+try:
+    import psycopg2
+    import psycopg2.extras
+    PSYCOPG2_AVAILABLE = True
+except ImportError as e:
+    print(f"❌ psycopg2 import failed: {e}")
+    PSYCOPG2_AVAILABLE = False
 
 # Database Configuration
 DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://vofodb_user:Y7MQfAWwEtsiHQLiGHFV7ikOI2ruTv3u@dpg-d5lm4ongi27c7390kq40-a/vofodb')
@@ -20,20 +29,33 @@ DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://vofodb_user:Y7MQfAWw
 # Simple in-memory cache for search results
 search_cache = {}
 
+# In-memory storage for fallback
+users_store = {}
+play_history_store = {}
+favorites_store = {}
+search_history_store = {}
+
 # Initialize database connection
 def get_db_connection():
+    if not PSYCOPG2_AVAILABLE:
+        return None
+    
     try:
         conn = psycopg2.connect(DATABASE_URL)
         return conn
     except Exception as e:
-        print(f"Database connection error: {e}")
+        print(f"❌ Database connection error: {e}")
         return None
 
 # Initialize database tables
 def init_database():
+    if not PSYCOPG2_AVAILABLE:
+        print("⚠️ psycopg2 not available, using in-memory storage")
+        return
+    
     conn = get_db_connection()
     if not conn:
-        print("Warning: Could not connect to database. Using in-memory storage.")
+        print("⚠️ Could not connect to database. Using in-memory storage.")
         return
     
     try:
@@ -187,22 +209,34 @@ def token_required(f):
         
         try:
             data = jwt.decode(token, app.secret_key, algorithms=['HS256'])
-            conn = get_db_connection()
-            if conn:
-                cur = conn.cursor()
-                cur.execute('SELECT id, username, email FROM users WHERE id = %s', (data['user_id'],))
-                user = cur.fetchone()
-                cur.close()
-                conn.close()
-                
-                if user:
-                    current_user = {
-                        'id': user[0],
-                        'username': user[1],
-                        'email': user[2]
-                    }
+            user_id = data['user_id']
+            username = data['username']
+            
+            # Check if user exists (in database or memory)
+            if PSYCOPG2_AVAILABLE:
+                conn = get_db_connection()
+                if conn:
+                    cur = conn.cursor()
+                    cur.execute('SELECT id, username, email FROM users WHERE id = %s', (user_id,))
+                    user = cur.fetchone()
+                    cur.close()
+                    conn.close()
+                    
+                    if user:
+                        current_user = {
+                            'id': user[0],
+                            'username': user[1],
+                            'email': user[2]
+                        }
+                        return f(current_user, *args, **kwargs)
+            else:
+                # Check in-memory storage
+                if user_id in users_store:
+                    current_user = users_store[user_id]
                     return f(current_user, *args, **kwargs)
-        except:
+                    
+        except Exception as e:
+            print(f"Token validation error: {e}")
             return jsonify({'success': False, 'error': 'Token is invalid'}), 401
         
         return jsonify({'success': False, 'error': 'Token is invalid'}), 401
@@ -232,48 +266,78 @@ def register():
         
         password_hash = generate_password_hash(password)
         
-        conn = get_db_connection()
-        if conn:
-            try:
-                cur = conn.cursor()
-                cur.execute(
-                    'INSERT INTO users (username, email, password_hash) VALUES (%s, %s, %s) RETURNING id',
-                    (username, email, password_hash)
-                )
-                user_id = cur.fetchone()[0]
-                conn.commit()
-                cur.close()
-                
-                # Create token
-                token = jwt.encode(
-                    {'user_id': user_id, 'username': username},
-                    app.secret_key,
-                    algorithm='HS256'
-                )
-                
-                # Store in session
-                session['user_id'] = user_id
-                session['token'] = token
-                session['username'] = username
-                
-                return jsonify({
-                    'success': True,
-                    'message': 'Registration successful',
-                    'user': {
-                        'id': user_id,
-                        'username': username,
-                        'email': email
-                    },
-                    'token': token
-                })
-                
-            except psycopg2.IntegrityError:
-                return jsonify({'success': False, 'error': 'Username already exists'}), 400
-            finally:
-                conn.close()
-        else:
-            # Fallback to in-memory storage if database is not available
-            return jsonify({'success': False, 'error': 'Database connection failed'}), 500
+        # Try database first
+        if PSYCOPG2_AVAILABLE:
+            conn = get_db_connection()
+            if conn:
+                try:
+                    cur = conn.cursor()
+                    cur.execute(
+                        'INSERT INTO users (username, email, password_hash) VALUES (%s, %s, %s) RETURNING id',
+                        (username, email, password_hash)
+                    )
+                    user_id = cur.fetchone()[0]
+                    conn.commit()
+                    cur.close()
+                    conn.close()
+                    
+                    # Create token
+                    token = jwt.encode(
+                        {'user_id': user_id, 'username': username},
+                        app.secret_key,
+                        algorithm='HS256'
+                    )
+                    
+                    # Store in session
+                    session['user_id'] = user_id
+                    session['token'] = token
+                    session['username'] = username
+                    
+                    return jsonify({
+                        'success': True,
+                        'message': 'Registration successful',
+                        'user': {
+                            'id': user_id,
+                            'username': username,
+                            'email': email
+                        },
+                        'token': token
+                    })
+                    
+                except Exception as e:
+                    return jsonify({'success': False, 'error': str(e)}), 400
+        
+        # Fallback to in-memory storage
+        user_id = str(len(users_store) + 1)
+        users_store[user_id] = {
+            'id': user_id,
+            'username': username,
+            'email': email,
+            'password_hash': password_hash
+        }
+        
+        # Create token
+        token = jwt.encode(
+            {'user_id': user_id, 'username': username},
+            app.secret_key,
+            algorithm='HS256'
+        )
+        
+        # Store in session
+        session['user_id'] = user_id
+        session['token'] = token
+        session['username'] = username
+        
+        return jsonify({
+            'success': True,
+            'message': 'Registration successful (using in-memory storage)',
+            'user': {
+                'id': user_id,
+                'username': username,
+                'email': email
+            },
+            'token': token
+        })
     
     except Exception as e:
         print(f"Registration error: {e}")
@@ -290,44 +354,68 @@ def login():
         if not username or not password:
             return jsonify({'success': False, 'error': 'Username and password are required'}), 400
         
-        conn = get_db_connection()
-        if conn:
-            cur = conn.cursor()
-            cur.execute(
-                'SELECT id, username, email, password_hash FROM users WHERE username = %s',
-                (username,)
-            )
-            user = cur.fetchone()
-            cur.close()
-            conn.close()
-            
-            if user and check_password_hash(user[3], password):
-                # Create token
+        # Try database first
+        if PSYCOPG2_AVAILABLE:
+            conn = get_db_connection()
+            if conn:
+                cur = conn.cursor()
+                cur.execute(
+                    'SELECT id, username, email, password_hash FROM users WHERE username = %s',
+                    (username,)
+                )
+                user = cur.fetchone()
+                cur.close()
+                conn.close()
+                
+                if user and check_password_hash(user[3], password):
+                    # Create token
+                    token = jwt.encode(
+                        {'user_id': user[0], 'username': user[1]},
+                        app.secret_key,
+                        algorithm='HS256'
+                    )
+                    
+                    # Store in session
+                    session['user_id'] = user[0]
+                    session['token'] = token
+                    session['username'] = user[1]
+                    
+                    return jsonify({
+                        'success': True,
+                        'message': 'Login successful',
+                        'user': {
+                            'id': user[0],
+                            'username': user[1],
+                            'email': user[2]
+                        },
+                        'token': token
+                    })
+        
+        # Fallback to in-memory storage
+        for user_id, user_data in users_store.items():
+            if user_data['username'] == username and check_password_hash(user_data['password_hash'], password):
                 token = jwt.encode(
-                    {'user_id': user[0], 'username': user[1]},
+                    {'user_id': user_id, 'username': username},
                     app.secret_key,
                     algorithm='HS256'
                 )
                 
-                # Store in session
-                session['user_id'] = user[0]
+                session['user_id'] = user_id
                 session['token'] = token
-                session['username'] = user[1]
+                session['username'] = username
                 
                 return jsonify({
                     'success': True,
-                    'message': 'Login successful',
+                    'message': 'Login successful (using in-memory storage)',
                     'user': {
-                        'id': user[0],
-                        'username': user[1],
-                        'email': user[2]
+                        'id': user_id,
+                        'username': username,
+                        'email': user_data['email']
                     },
                     'token': token
                 })
-            else:
-                return jsonify({'success': False, 'error': 'Invalid username or password'}), 401
-        else:
-            return jsonify({'success': False, 'error': 'Database connection failed'}), 500
+        
+        return jsonify({'success': False, 'error': 'Invalid username or password'}), 401
     
     except Exception as e:
         print(f"Login error: {e}")
@@ -359,21 +447,38 @@ def check_auth():
     
     try:
         data = jwt.decode(token, app.secret_key, algorithms=['HS256'])
-        conn = get_db_connection()
-        if conn:
-            cur = conn.cursor()
-            cur.execute('SELECT id, username, email FROM users WHERE id = %s', (data['user_id'],))
-            user = cur.fetchone()
-            cur.close()
-            conn.close()
-            
-            if user:
+        user_id = data['user_id']
+        username = data['username']
+        
+        # Check if user exists
+        if PSYCOPG2_AVAILABLE:
+            conn = get_db_connection()
+            if conn:
+                cur = conn.cursor()
+                cur.execute('SELECT id, username, email FROM users WHERE id = %s', (user_id,))
+                user = cur.fetchone()
+                cur.close()
+                conn.close()
+                
+                if user:
+                    return jsonify({
+                        'authenticated': True,
+                        'user': {
+                            'id': user[0],
+                            'username': user[1],
+                            'email': user[2]
+                        }
+                    })
+        else:
+            # Check in-memory storage
+            if user_id in users_store:
+                user_data = users_store[user_id]
                 return jsonify({
                     'authenticated': True,
                     'user': {
-                        'id': user[0],
-                        'username': user[1],
-                        'email': user[2]
+                        'id': user_id,
+                        'username': user_data['username'],
+                        'email': user_data['email']
                     }
                 })
     except:
@@ -434,32 +539,6 @@ def search():
         # Cache the results
         search_cache[cache_key] = videos
         
-        # Log search history if user is authenticated
-        token = None
-        if 'Authorization' in request.headers:
-            auth_header = request.headers['Authorization']
-            if auth_header.startswith('Bearer '):
-                token = auth_header.split(' ')[1]
-        
-        if not token and 'token' in session:
-            token = session.get('token')
-        
-        if token:
-            try:
-                data = jwt.decode(token, app.secret_key, algorithms=['HS256'])
-                conn = get_db_connection()
-                if conn:
-                    cur = conn.cursor()
-                    cur.execute(
-                        'INSERT INTO search_history (user_id, query, result_count) VALUES (%s, %s, %s)',
-                        (data['user_id'], query, len(videos))
-                    )
-                    conn.commit()
-                    cur.close()
-                    conn.close()
-            except Exception as e:
-                print(f"Failed to log search history: {e}")
-        
         print(f"✅ Found {len(videos)} videos")
         return jsonify(videos)
     
@@ -483,20 +562,32 @@ def play(current_user):
         video_info = videos[0] if videos else {
             'title': 'Unknown Title',
             'artist': 'Unknown Artist',
-            'thumbnail': 'https://i.ytimg.com/vi/{video_id}/hqdefault.jpg'
+            'thumbnail': f'https://i.ytimg.com/vi/{video_id}/hqdefault.jpg'
         }
         
         # Log play history
-        conn = get_db_connection()
-        if conn:
-            cur = conn.cursor()
-            cur.execute(
-                'INSERT INTO play_history (user_id, video_id, title, artist) VALUES (%s, %s, %s, %s)',
-                (current_user['id'], video_id, video_info['title'], video_info['artist'])
-            )
-            conn.commit()
-            cur.close()
-            conn.close()
+        if PSYCOPG2_AVAILABLE:
+            conn = get_db_connection()
+            if conn:
+                cur = conn.cursor()
+                cur.execute(
+                    'INSERT INTO play_history (user_id, video_id, title, artist) VALUES (%s, %s, %s, %s)',
+                    (current_user['id'], video_id, video_info['title'], video_info['artist'])
+                )
+                conn.commit()
+                cur.close()
+                conn.close()
+        else:
+            # Store in memory
+            user_id = current_user['id']
+            if user_id not in play_history_store:
+                play_history_store[user_id] = []
+            play_history_store[user_id].append({
+                'video_id': video_id,
+                'title': video_info['title'],
+                'artist': video_info['artist'],
+                'created_at': datetime.now().isoformat()
+            })
         
         return jsonify({
             'success': True,
@@ -525,22 +616,41 @@ def add_favorite(current_user):
         if not video_id:
             return jsonify({'success': False, 'error': 'Video ID is required'}), 400
         
-        conn = get_db_connection()
-        if conn:
-            cur = conn.cursor()
-            try:
-                cur.execute(
-                    'INSERT INTO favorites (user_id, video_id, title, artist, thumbnail) VALUES (%s, %s, %s, %s, %s)',
-                    (current_user['id'], video_id, title, artist, thumbnail)
-                )
-                conn.commit()
-                cur.close()
-                conn.close()
-                return jsonify({'success': True, 'message': 'Added to favorites'})
-            except psycopg2.IntegrityError:
+        if PSYCOPG2_AVAILABLE:
+            conn = get_db_connection()
+            if conn:
+                try:
+                    cur = conn.cursor()
+                    cur.execute(
+                        'INSERT INTO favorites (user_id, video_id, title, artist, thumbnail) VALUES (%s, %s, %s, %s, %s)',
+                        (current_user['id'], video_id, title, artist, thumbnail)
+                    )
+                    conn.commit()
+                    cur.close()
+                    conn.close()
+                    return jsonify({'success': True, 'message': 'Added to favorites'})
+                except Exception as e:
+                    return jsonify({'success': False, 'error': str(e)}), 400
+        
+        # Fallback to memory storage
+        user_id = current_user['id']
+        if user_id not in favorites_store:
+            favorites_store[user_id] = []
+        
+        # Check if already exists
+        for fav in favorites_store[user_id]:
+            if fav['video_id'] == video_id:
                 return jsonify({'success': False, 'error': 'Already in favorites'}), 400
-        else:
-            return jsonify({'success': False, 'error': 'Database connection failed'}), 500
+        
+        favorites_store[user_id].append({
+            'video_id': video_id,
+            'title': title,
+            'artist': artist,
+            'thumbnail': thumbnail,
+            'added_at': datetime.now().isoformat()
+        })
+        
+        return jsonify({'success': True, 'message': 'Added to favorites (in-memory)'})
     
     except Exception as e:
         print(f"❌ Add favorite error: {e}")
@@ -557,19 +667,25 @@ def remove_favorite(current_user):
         if not video_id:
             return jsonify({'success': False, 'error': 'Video ID is required'}), 400
         
-        conn = get_db_connection()
-        if conn:
-            cur = conn.cursor()
-            cur.execute(
-                'DELETE FROM favorites WHERE user_id = %s AND video_id = %s',
-                (current_user['id'], video_id)
-            )
-            conn.commit()
-            cur.close()
-            conn.close()
-            return jsonify({'success': True, 'message': 'Removed from favorites'})
-        else:
-            return jsonify({'success': False, 'error': 'Database connection failed'}), 500
+        if PSYCOPG2_AVAILABLE:
+            conn = get_db_connection()
+            if conn:
+                cur = conn.cursor()
+                cur.execute(
+                    'DELETE FROM favorites WHERE user_id = %s AND video_id = %s',
+                    (current_user['id'], video_id)
+                )
+                conn.commit()
+                cur.close()
+                conn.close()
+                return jsonify({'success': True, 'message': 'Removed from favorites'})
+        
+        # Fallback to memory storage
+        user_id = current_user['id']
+        if user_id in favorites_store:
+            favorites_store[user_id] = [fav for fav in favorites_store[user_id] if fav['video_id'] != video_id]
+        
+        return jsonify({'success': True, 'message': 'Removed from favorites (in-memory)'})
     
     except Exception as e:
         print(f"❌ Remove favorite error: {e}")
@@ -580,32 +696,40 @@ def remove_favorite(current_user):
 def get_favorites(current_user):
     """Get user's favorite songs"""
     try:
-        conn = get_db_connection()
-        if conn:
-            cur = conn.cursor()
-            cur.execute(
-                'SELECT video_id, title, artist, thumbnail, added_at FROM favorites WHERE user_id = %s ORDER BY added_at DESC',
-                (current_user['id'],)
-            )
-            favorites = cur.fetchall()
-            cur.close()
-            conn.close()
-            
-            return jsonify({
-                'success': True,
-                'favorites': [
-                    {
-                        'id': fav[0],
-                        'title': fav[1],
-                        'artist': fav[2],
-                        'thumbnail': fav[3],
-                        'added_at': fav[4].isoformat() if fav[4] else None
-                    }
-                    for fav in favorites
-                ]
-            })
-        else:
-            return jsonify({'success': False, 'error': 'Database connection failed'}), 500
+        if PSYCOPG2_AVAILABLE:
+            conn = get_db_connection()
+            if conn:
+                cur = conn.cursor()
+                cur.execute(
+                    'SELECT video_id, title, artist, thumbnail, added_at FROM favorites WHERE user_id = %s ORDER BY added_at DESC',
+                    (current_user['id'],)
+                )
+                favorites = cur.fetchall()
+                cur.close()
+                conn.close()
+                
+                return jsonify({
+                    'success': True,
+                    'favorites': [
+                        {
+                            'id': fav[0],
+                            'title': fav[1],
+                            'artist': fav[2],
+                            'thumbnail': fav[3],
+                            'added_at': fav[4].isoformat() if fav[4] else None
+                        }
+                        for fav in favorites
+                    ]
+                })
+        
+        # Fallback to memory storage
+        user_id = current_user['id']
+        favorites = favorites_store.get(user_id, [])
+        
+        return jsonify({
+            'success': True,
+            'favorites': favorites
+        })
     
     except Exception as e:
         print(f"❌ Get favorites error: {e}")
@@ -616,55 +740,61 @@ def get_favorites(current_user):
 def profile(current_user):
     """Get user profile with stats"""
     try:
-        conn = get_db_connection()
-        if conn:
-            cur = conn.cursor()
-            
-            # Get play count
-            cur.execute('SELECT COUNT(*) FROM play_history WHERE user_id = %s', (current_user['id'],))
-            play_count = cur.fetchone()[0] or 0
-            
-            # Get search count
-            cur.execute('SELECT COUNT(*) FROM search_history WHERE user_id = %s', (current_user['id'],))
-            search_count = cur.fetchone()[0] or 0
-            
-            # Get favorites count
-            cur.execute('SELECT COUNT(*) FROM favorites WHERE user_id = %s', (current_user['id'],))
-            favorites_count = cur.fetchone()[0] or 0
-            
-            # Get recent plays
-            cur.execute('''
-                SELECT video_id, title, artist, created_at 
-                FROM play_history 
-                WHERE user_id = %s 
-                ORDER BY created_at DESC 
-                LIMIT 10
-            ''', (current_user['id'],))
-            recent_plays = cur.fetchall()
-            
-            cur.close()
-            conn.close()
-            
-            return jsonify({
-                'success': True,
-                'user': current_user,
-                'stats': {
-                    'play_count': play_count,
-                    'search_count': search_count,
-                    'favorites_count': favorites_count
-                },
-                'recent_plays': [
+        play_count = 0
+        search_count = 0
+        favorites_count = 0
+        recent_plays = []
+        
+        if PSYCOPG2_AVAILABLE:
+            conn = get_db_connection()
+            if conn:
+                cur = conn.cursor()
+                
+                # Get play count
+                cur.execute('SELECT COUNT(*) FROM play_history WHERE user_id = %s', (current_user['id'],))
+                play_count = cur.fetchone()[0] or 0
+                
+                # Get search count
+                cur.execute('SELECT COUNT(*) FROM search_history WHERE user_id = %s', (current_user['id'],))
+                search_count = cur.fetchone()[0] or 0
+                
+                # Get favorites count
+                cur.execute('SELECT COUNT(*) FROM favorites WHERE user_id = %s', (current_user['id'],))
+                favorites_count = cur.fetchone()[0] or 0
+                
+                # Get recent plays
+                cur.execute('''
+                    SELECT video_id, title, artist, created_at 
+                    FROM play_history 
+                    WHERE user_id = %s 
+                    ORDER BY created_at DESC 
+                    LIMIT 10
+                ''', (current_user['id'],))
+                recent_plays_data = cur.fetchall()
+                
+                cur.close()
+                conn.close()
+                
+                recent_plays = [
                     {
                         'video_id': play[0],
                         'title': play[1],
                         'artist': play[2],
                         'played_at': play[3].isoformat() if play[3] else None
                     }
-                    for play in recent_plays
+                    for play in recent_plays_data
                 ]
-            })
-        else:
-            return jsonify({'success': False, 'error': 'Database connection failed'}), 500
+        
+        return jsonify({
+            'success': True,
+            'user': current_user,
+            'stats': {
+                'play_count': play_count,
+                'search_count': search_count,
+                'favorites_count': favorites_count
+            },
+            'recent_plays': recent_plays
+        })
     
     except Exception as e:
         print(f"❌ Profile error: {e}")
@@ -675,34 +805,42 @@ def profile(current_user):
 def get_play_history(current_user):
     """Get user's play history"""
     try:
-        conn = get_db_connection()
-        if conn:
-            cur = conn.cursor()
-            cur.execute('''
-                SELECT video_id, title, artist, created_at 
-                FROM play_history 
-                WHERE user_id = %s 
-                ORDER BY created_at DESC
-                LIMIT 50
-            ''', (current_user['id'],))
-            history = cur.fetchall()
-            cur.close()
-            conn.close()
-            
-            return jsonify({
-                'success': True,
-                'history': [
-                    {
-                        'video_id': item[0],
-                        'title': item[1],
-                        'artist': item[2],
-                        'played_at': item[3].isoformat() if item[3] else None
-                    }
-                    for item in history
-                ]
-            })
-        else:
-            return jsonify({'success': False, 'error': 'Database connection failed'}), 500
+        if PSYCOPG2_AVAILABLE:
+            conn = get_db_connection()
+            if conn:
+                cur = conn.cursor()
+                cur.execute('''
+                    SELECT video_id, title, artist, created_at 
+                    FROM play_history 
+                    WHERE user_id = %s 
+                    ORDER BY created_at DESC
+                    LIMIT 50
+                ''', (current_user['id'],))
+                history = cur.fetchall()
+                cur.close()
+                conn.close()
+                
+                return jsonify({
+                    'success': True,
+                    'history': [
+                        {
+                            'video_id': item[0],
+                            'title': item[1],
+                            'artist': item[2],
+                            'played_at': item[3].isoformat() if item[3] else None
+                        }
+                        for item in history
+                    ]
+                })
+        
+        # Fallback to memory storage
+        user_id = current_user['id']
+        history = play_history_store.get(user_id, [])
+        
+        return jsonify({
+            'success': True,
+            'history': history[:50]  # Limit to 50
+        })
     
     except Exception as e:
         print(f"❌ History error: {e}")
@@ -715,7 +853,8 @@ def health():
     return jsonify({
         'status': 'healthy',
         'service': 'VoFo Music API',
-        'database': 'connected' if get_db_connection() else 'disconnected'
+        'database': 'connected' if PSYCOPG2_AVAILABLE and get_db_connection() else 'disconnected',
+        'storage': 'in-memory' if not PSYCOPG2_AVAILABLE else 'database'
     })
 
 # Error handlers
@@ -732,6 +871,7 @@ if __name__ == '__main__':
     init_database()
     
     print("🚀 VoFo Music Server Starting...")
+    print(f"📦 Database: {'Connected' if PSYCOPG2_AVAILABLE else 'Using in-memory storage'}")
     print("📡 API Endpoints:")
     print("   GET  /                    - Serve frontend")
     print("   POST /api/register        - Register new user")
