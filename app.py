@@ -9,16 +9,15 @@ from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
 import jwt
 from functools import wraps
-import json
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder='.')
+app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
 CORS(app, supports_credentials=True)
 
-# Configuration
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
+# Database Configuration
 DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://vofodb_user:Y7MQfAWwEtsiHQLiGHFV7ikOI2ruTv3u@dpg-d5lm4ongi27c7390kq40-a/vofodb')
 
-# Simple in-memory cache for search results (for development)
+# Simple in-memory cache for search results
 search_cache = {}
 
 # Initialize database connection
@@ -75,13 +74,27 @@ def init_database():
             )
         ''')
         
+        # Favorites table
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS favorites (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id),
+                video_id VARCHAR(20) NOT NULL,
+                title TEXT,
+                artist TEXT,
+                thumbnail TEXT,
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, video_id)
+            )
+        ''')
+        
         conn.commit()
         cur.close()
         conn.close()
-        print("Database tables initialized successfully")
+        print("✅ Database tables initialized successfully")
         
     except Exception as e:
-        print(f"Database initialization error: {e}")
+        print(f"❌ Database initialization error: {e}")
 
 # YouTube search functions
 def extract_video_id(url):
@@ -166,14 +179,14 @@ def token_required(f):
                 token = auth_header.split(' ')[1]
         
         # Fallback to session
-        if not token and 'user_id' in session:
+        if not token and 'token' in session:
             token = session.get('token')
         
         if not token:
-            return jsonify({'error': 'Token is missing'}), 401
+            return jsonify({'success': False, 'error': 'Token is missing'}), 401
         
         try:
-            data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
+            data = jwt.decode(token, app.secret_key, algorithms=['HS256'])
             conn = get_db_connection()
             if conn:
                 cur = conn.cursor()
@@ -190,9 +203,9 @@ def token_required(f):
                     }
                     return f(current_user, *args, **kwargs)
         except:
-            return jsonify({'error': 'Token is invalid'}), 401
+            return jsonify({'success': False, 'error': 'Token is invalid'}), 401
         
-        return jsonify({'error': 'Token is invalid'}), 401
+        return jsonify({'success': False, 'error': 'Token is invalid'}), 401
     return decorated
 
 # Routes
@@ -201,6 +214,7 @@ def index():
     """Serve the main page"""
     return render_template('index.html')
 
+# Authentication routes
 @app.route('/api/register', methods=['POST'])
 def register():
     """Register a new user"""
@@ -211,10 +225,10 @@ def register():
         password = data.get('password', '').strip()
         
         if not username or not password:
-            return jsonify({'error': 'Username and password are required'}), 400
+            return jsonify({'success': False, 'error': 'Username and password are required'}), 400
         
         if len(password) < 6:
-            return jsonify({'error': 'Password must be at least 6 characters'}), 400
+            return jsonify({'success': False, 'error': 'Password must be at least 6 characters'}), 400
         
         password_hash = generate_password_hash(password)
         
@@ -233,7 +247,7 @@ def register():
                 # Create token
                 token = jwt.encode(
                     {'user_id': user_id, 'username': username},
-                    app.config['SECRET_KEY'],
+                    app.secret_key,
                     algorithm='HS256'
                 )
                 
@@ -254,16 +268,16 @@ def register():
                 })
                 
             except psycopg2.IntegrityError:
-                return jsonify({'error': 'Username already exists'}), 400
+                return jsonify({'success': False, 'error': 'Username already exists'}), 400
             finally:
                 conn.close()
         else:
             # Fallback to in-memory storage if database is not available
-            return jsonify({'error': 'Database connection failed'}), 500
+            return jsonify({'success': False, 'error': 'Database connection failed'}), 500
     
     except Exception as e:
         print(f"Registration error: {e}")
-        return jsonify({'error': 'Registration failed'}), 500
+        return jsonify({'success': False, 'error': 'Registration failed'}), 500
 
 @app.route('/api/login', methods=['POST'])
 def login():
@@ -274,7 +288,7 @@ def login():
         password = data.get('password', '').strip()
         
         if not username or not password:
-            return jsonify({'error': 'Username and password are required'}), 400
+            return jsonify({'success': False, 'error': 'Username and password are required'}), 400
         
         conn = get_db_connection()
         if conn:
@@ -291,7 +305,7 @@ def login():
                 # Create token
                 token = jwt.encode(
                     {'user_id': user[0], 'username': user[1]},
-                    app.config['SECRET_KEY'],
+                    app.secret_key,
                     algorithm='HS256'
                 )
                 
@@ -311,13 +325,13 @@ def login():
                     'token': token
                 })
             else:
-                return jsonify({'error': 'Invalid username or password'}), 401
+                return jsonify({'success': False, 'error': 'Invalid username or password'}), 401
         else:
-            return jsonify({'error': 'Database connection failed'}), 500
+            return jsonify({'success': False, 'error': 'Database connection failed'}), 500
     
     except Exception as e:
         print(f"Login error: {e}")
-        return jsonify({'error': 'Login failed'}), 500
+        return jsonify({'success': False, 'error': 'Login failed'}), 500
 
 @app.route('/api/logout', methods=['POST'])
 def logout():
@@ -328,8 +342,15 @@ def logout():
 @app.route('/api/check-auth', methods=['GET'])
 def check_auth():
     """Check if user is authenticated"""
-    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    token = None
     
+    # Check Authorization header
+    if 'Authorization' in request.headers:
+        auth_header = request.headers['Authorization']
+        if auth_header.startswith('Bearer '):
+            token = auth_header.split(' ')[1]
+    
+    # Fallback to session
     if not token and 'token' in session:
         token = session.get('token')
     
@@ -337,7 +358,7 @@ def check_auth():
         return jsonify({'authenticated': False})
     
     try:
-        data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
+        data = jwt.decode(token, app.secret_key, algorithms=['HS256'])
         conn = get_db_connection()
         if conn:
             cur = conn.cursor()
@@ -360,6 +381,7 @@ def check_auth():
     
     return jsonify({'authenticated': False})
 
+# Music routes
 @app.route('/api/search', methods=['GET'])
 def search():
     """Search for YouTube videos"""
@@ -369,12 +391,12 @@ def search():
         if not query:
             return jsonify([])
         
-        print(f"Searching for: {query}")
+        print(f"🔍 Searching for: {query}")
         
         # Check cache first
         cache_key = query.lower()
         if cache_key in search_cache:
-            print("Returning cached results")
+            print("📦 Returning cached results")
             return jsonify(search_cache[cache_key])
         
         # Search YouTube
@@ -382,9 +404,9 @@ def search():
         
         if not videos:
             # Try a fallback search
-            print("No videos found with regex, trying fallback...")
+            print("⚠️ No videos found with regex, trying fallback...")
             videos = [{
-                'id': 'dQw4w9WgXcQ',  # Rick Astley - Never Gonna Give You Up
+                'id': 'dQw4w9WgXcQ',
                 'title': 'Rick Astley - Never Gonna Give You Up',
                 'artist': 'Rick Astley',
                 'channel': 'Rick Astley',
@@ -392,7 +414,7 @@ def search():
                 'thumbnail': 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
                 'url': 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
             }, {
-                'id': 'kJQP7kiw5Fk',  # Luis Fonsi - Despacito
+                'id': 'kJQP7kiw5Fk',
                 'title': 'Luis Fonsi - Despacito ft. Daddy Yankee',
                 'artist': 'Luis Fonsi',
                 'channel': 'Luis Fonsi',
@@ -400,7 +422,7 @@ def search():
                 'thumbnail': 'https://i.ytimg.com/vi/kJQP7kiw5Fk/hqdefault.jpg',
                 'url': 'https://www.youtube.com/watch?v=kJQP7kiw5Fk'
             }, {
-                'id': '09R8_2nJtjg',  # Maroon 5 - Sugar
+                'id': '09R8_2nJtjg',
                 'title': 'Maroon 5 - Sugar',
                 'artist': 'Maroon 5',
                 'channel': 'Maroon 5',
@@ -413,13 +435,18 @@ def search():
         search_cache[cache_key] = videos
         
         # Log search history if user is authenticated
-        token = request.headers.get('Authorization', '').replace('Bearer ', '')
+        token = None
+        if 'Authorization' in request.headers:
+            auth_header = request.headers['Authorization']
+            if auth_header.startswith('Bearer '):
+                token = auth_header.split(' ')[1]
+        
         if not token and 'token' in session:
             token = session.get('token')
         
         if token:
             try:
-                data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
+                data = jwt.decode(token, app.secret_key, algorithms=['HS256'])
                 conn = get_db_connection()
                 if conn:
                     cur = conn.cursor()
@@ -430,14 +457,14 @@ def search():
                     conn.commit()
                     cur.close()
                     conn.close()
-            except:
-                pass
+            except Exception as e:
+                print(f"Failed to log search history: {e}")
         
-        print(f"Found {len(videos)} videos")
+        print(f"✅ Found {len(videos)} videos")
         return jsonify(videos)
     
     except Exception as e:
-        print(f"Search endpoint error: {str(e)}")
+        print(f"❌ Search endpoint error: {str(e)}")
         return jsonify([])
 
 @app.route('/api/play', methods=['POST'])
@@ -449,18 +476,14 @@ def play(current_user):
         video_id = data.get('url', '').strip()
         
         if not video_id:
-            return jsonify({'error': 'No video ID provided'}), 400
-        
-        # For YouTube, we'll use the embed URL
-        # Note: This is for demo purposes. For actual audio streaming,
-        # you would need to use yt-dlp to extract audio streams
-        stream_url = f"https://www.youtube.com/embed/{video_id}?autoplay=1&controls=0&modestbranding=1&rel=0"
+            return jsonify({'success': False, 'error': 'No video ID provided'}), 400
         
         # Get video info for logging
         videos = search_youtube(video_id, max_results=1)
         video_info = videos[0] if videos else {
             'title': 'Unknown Title',
-            'artist': 'Unknown Artist'
+            'artist': 'Unknown Artist',
+            'thumbnail': 'https://i.ytimg.com/vi/{video_id}/hqdefault.jpg'
         }
         
         # Log play history
@@ -476,19 +499,122 @@ def play(current_user):
             conn.close()
         
         return jsonify({
-            'stream_url': stream_url,
+            'success': True,
+            'stream_url': f"https://www.youtube.com/embed/{video_id}?autoplay=1&controls=0&modestbranding=1&rel=0",
             'video_id': video_id,
-            'success': True
+            'title': video_info['title'],
+            'artist': video_info['artist'],
+            'thumbnail': video_info['thumbnail']
         })
     
     except Exception as e:
-        print(f"Play error: {e}")
-        return jsonify({'error': str(e)}), 500
+        print(f"❌ Play error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/favorites/add', methods=['POST'])
+@token_required
+def add_favorite(current_user):
+    """Add a song to favorites"""
+    try:
+        data = request.json
+        video_id = data.get('video_id', '').strip()
+        title = data.get('title', '').strip()
+        artist = data.get('artist', '').strip()
+        thumbnail = data.get('thumbnail', '').strip()
+        
+        if not video_id:
+            return jsonify({'success': False, 'error': 'Video ID is required'}), 400
+        
+        conn = get_db_connection()
+        if conn:
+            cur = conn.cursor()
+            try:
+                cur.execute(
+                    'INSERT INTO favorites (user_id, video_id, title, artist, thumbnail) VALUES (%s, %s, %s, %s, %s)',
+                    (current_user['id'], video_id, title, artist, thumbnail)
+                )
+                conn.commit()
+                cur.close()
+                conn.close()
+                return jsonify({'success': True, 'message': 'Added to favorites'})
+            except psycopg2.IntegrityError:
+                return jsonify({'success': False, 'error': 'Already in favorites'}), 400
+        else:
+            return jsonify({'success': False, 'error': 'Database connection failed'}), 500
+    
+    except Exception as e:
+        print(f"❌ Add favorite error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/favorites/remove', methods=['POST'])
+@token_required
+def remove_favorite(current_user):
+    """Remove a song from favorites"""
+    try:
+        data = request.json
+        video_id = data.get('video_id', '').strip()
+        
+        if not video_id:
+            return jsonify({'success': False, 'error': 'Video ID is required'}), 400
+        
+        conn = get_db_connection()
+        if conn:
+            cur = conn.cursor()
+            cur.execute(
+                'DELETE FROM favorites WHERE user_id = %s AND video_id = %s',
+                (current_user['id'], video_id)
+            )
+            conn.commit()
+            cur.close()
+            conn.close()
+            return jsonify({'success': True, 'message': 'Removed from favorites'})
+        else:
+            return jsonify({'success': False, 'error': 'Database connection failed'}), 500
+    
+    except Exception as e:
+        print(f"❌ Remove favorite error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/favorites', methods=['GET'])
+@token_required
+def get_favorites(current_user):
+    """Get user's favorite songs"""
+    try:
+        conn = get_db_connection()
+        if conn:
+            cur = conn.cursor()
+            cur.execute(
+                'SELECT video_id, title, artist, thumbnail, added_at FROM favorites WHERE user_id = %s ORDER BY added_at DESC',
+                (current_user['id'],)
+            )
+            favorites = cur.fetchall()
+            cur.close()
+            conn.close()
+            
+            return jsonify({
+                'success': True,
+                'favorites': [
+                    {
+                        'id': fav[0],
+                        'title': fav[1],
+                        'artist': fav[2],
+                        'thumbnail': fav[3],
+                        'added_at': fav[4].isoformat() if fav[4] else None
+                    }
+                    for fav in favorites
+                ]
+            })
+        else:
+            return jsonify({'success': False, 'error': 'Database connection failed'}), 500
+    
+    except Exception as e:
+        print(f"❌ Get favorites error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/profile', methods=['GET'])
 @token_required
 def profile(current_user):
-    """Get user profile"""
+    """Get user profile with stats"""
     try:
         conn = get_db_connection()
         if conn:
@@ -496,11 +622,15 @@ def profile(current_user):
             
             # Get play count
             cur.execute('SELECT COUNT(*) FROM play_history WHERE user_id = %s', (current_user['id'],))
-            play_count = cur.fetchone()[0]
+            play_count = cur.fetchone()[0] or 0
             
             # Get search count
             cur.execute('SELECT COUNT(*) FROM search_history WHERE user_id = %s', (current_user['id'],))
-            search_count = cur.fetchone()[0]
+            search_count = cur.fetchone()[0] or 0
+            
+            # Get favorites count
+            cur.execute('SELECT COUNT(*) FROM favorites WHERE user_id = %s', (current_user['id'],))
+            favorites_count = cur.fetchone()[0] or 0
             
             # Get recent plays
             cur.execute('''
@@ -516,10 +646,12 @@ def profile(current_user):
             conn.close()
             
             return jsonify({
+                'success': True,
                 'user': current_user,
                 'stats': {
                     'play_count': play_count,
-                    'search_count': search_count
+                    'search_count': search_count,
+                    'favorites_count': favorites_count
                 },
                 'recent_plays': [
                     {
@@ -532,20 +664,68 @@ def profile(current_user):
                 ]
             })
         else:
-            return jsonify({'error': 'Database connection failed'}), 500
+            return jsonify({'success': False, 'error': 'Database connection failed'}), 500
     
     except Exception as e:
-        print(f"Profile error: {e}")
-        return jsonify({'error': 'Failed to get profile'}), 500
+        print(f"❌ Profile error: {e}")
+        return jsonify({'success': False, 'error': 'Failed to get profile'}), 500
+
+@app.route('/api/history/plays', methods=['GET'])
+@token_required
+def get_play_history(current_user):
+    """Get user's play history"""
+    try:
+        conn = get_db_connection()
+        if conn:
+            cur = conn.cursor()
+            cur.execute('''
+                SELECT video_id, title, artist, created_at 
+                FROM play_history 
+                WHERE user_id = %s 
+                ORDER BY created_at DESC
+                LIMIT 50
+            ''', (current_user['id'],))
+            history = cur.fetchall()
+            cur.close()
+            conn.close()
+            
+            return jsonify({
+                'success': True,
+                'history': [
+                    {
+                        'video_id': item[0],
+                        'title': item[1],
+                        'artist': item[2],
+                        'played_at': item[3].isoformat() if item[3] else None
+                    }
+                    for item in history
+                ]
+            })
+        else:
+            return jsonify({'success': False, 'error': 'Database connection failed'}), 500
+    
+    except Exception as e:
+        print(f"❌ History error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+# Health check endpoint
+@app.route('/api/health', methods=['GET'])
+def health():
+    """Health check endpoint"""
+    return jsonify({
+        'status': 'healthy',
+        'service': 'VoFo Music API',
+        'database': 'connected' if get_db_connection() else 'disconnected'
+    })
 
 # Error handlers
 @app.errorhandler(404)
 def not_found(error):
-    return jsonify({'error': 'Not found'}), 404
+    return jsonify({'success': False, 'error': 'Not found'}), 404
 
 @app.errorhandler(500)
 def internal_error(error):
-    return jsonify({'error': 'Internal server error'}), 500
+    return jsonify({'success': False, 'error': 'Internal server error'}), 500
 
 if __name__ == '__main__':
     # Initialize database on startup
@@ -561,7 +741,10 @@ if __name__ == '__main__':
     print("   GET  /api/search?q=       - Search for music")
     print("   POST /api/play            - Play a song")
     print("   GET  /api/profile         - Get user profile")
+    print("   GET  /api/favorites       - Get favorites")
+    print("   POST /api/favorites/add   - Add to favorites")
+    print("   GET  /api/history/plays   - Get play history")
     print("\n🔗 Open http://localhost:5000 in your browser")
     
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    app.run(host='0.0.0.0', port=port, debug=False)
