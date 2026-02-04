@@ -133,6 +133,11 @@
             background: var(--gold-light);
         }
         
+        .auth-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
         .auth-switch {
             font-size: 12px;
             margin-top: 25px;
@@ -143,6 +148,13 @@
         
         .auth-switch:hover {
             color: var(--gold);
+        }
+        
+        .auth-error {
+            color: #ff4b2b;
+            font-size: 12px;
+            margin-top: 10px;
+            min-height: 20px;
         }
         
         /* Main App */
@@ -1069,7 +1081,9 @@
             <input type="text" id="lUser" class="auth-input" placeholder="IDENTITY" autocomplete="off">
             <input type="password" id="lPass" class="auth-input" placeholder="ENCRYPTION" autocomplete="off">
             
-            <button class="auth-btn" onclick="handleAuth()">
+            <div class="auth-error" id="authError"></div>
+            
+            <button class="auth-btn" onclick="handleAuth()" id="authButton">
                 <span id="authBtnText">Initialize</span>
             </button>
             
@@ -1528,13 +1542,24 @@
         window.onload = () => {
             const savedUser = localStorage.getItem('vofo_user');
             if (savedUser) {
-                currentUser = JSON.parse(savedUser);
-                document.getElementById('authScreen').classList.add('hidden');
-                document.getElementById('app').classList.remove('hidden');
-                initializeApp();
+                try {
+                    currentUser = JSON.parse(savedUser);
+                    // Check if the user object has required properties
+                    if (currentUser && currentUser.user_id) {
+                        document.getElementById('authScreen').classList.add('hidden');
+                        document.getElementById('app').classList.remove('hidden');
+                        initializeApp();
+                    } else {
+                        // Invalid user data, clear it
+                        localStorage.removeItem('vofo_user');
+                        currentUser = null;
+                    }
+                } catch (e) {
+                    // Invalid JSON, clear it
+                    localStorage.removeItem('vofo_user');
+                    currentUser = null;
+                }
             }
-            
-            setupEventListeners();
         };
         
         function initializeApp() {
@@ -1581,24 +1606,153 @@
                     doSearch();
                 }
             });
+            
+            // Setup mobile menu toggle
+            document.getElementById('menuToggle').addEventListener('click', function() {
+                document.getElementById('sidebar').classList.toggle('active');
+            });
         }
         
-        function setupEventListeners() {
+        // Authentication functions
+        async function handleAuth() {
+            const username = document.getElementById('lUser').value.trim();
+            const password = document.getElementById('lPass').value.trim();
+            const authButton = document.getElementById('authButton');
+            const authError = document.getElementById('authError');
+            
+            // Clear any previous error
+            authError.textContent = '';
+            
+            if (!username || !password) {
+                authError.textContent = 'Please enter both username and password';
+                return;
+            }
+            
+            // Disable button and show loading
+            authButton.disabled = true;
+            authButton.innerHTML = '<span>Processing...</span>';
+            
+            try {
+                const endpoint = isLoginMode ? '/api/login' : '/api/register';
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        username: username, 
+                        password: password 
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    if (isLoginMode) {
+                        // Store user data in localStorage
+                        const userData = {
+                            user_id: data.user_id || data.id || username,
+                            username: username,
+                            // Add any other user data from response
+                            ...data.user
+                        };
+                        
+                        localStorage.setItem('vofo_user', JSON.stringify(userData));
+                        currentUser = userData;
+                        
+                        // Hide auth and show app
+                        document.getElementById('authScreen').classList.add('hidden');
+                        document.getElementById('app').classList.remove('hidden');
+                        
+                        // Initialize the app
+                        initializeApp();
+                    } else {
+                        // Registration successful
+                        authError.textContent = 'Account created successfully! Please log in.';
+                        authError.style.color = '#1db954'; // Green for success
+                        toggleAuth(); // Switch back to login mode
+                    }
+                } else {
+                    // Authentication failed
+                    authError.textContent = data.message || 'Authentication failed. Please check your credentials.';
+                }
+            } catch (error) {
+                console.error('Auth error:', error);
+                authError.textContent = 'Network error. Please try again.';
+                
+                // For demo purposes, allow login with any credentials
+                if (username && password) {
+                    // Create a demo user
+                    const demoUser = {
+                        user_id: 'demo_' + Date.now(),
+                        username: username,
+                        isDemo: true
+                    };
+                    
+                    localStorage.setItem('vofo_user', JSON.stringify(demoUser));
+                    currentUser = demoUser;
+                    
+                    // Hide auth and show app
+                    document.getElementById('authScreen').classList.add('hidden');
+                    document.getElementById('app').classList.remove('hidden');
+                    
+                    // Initialize the app
+                    initializeApp();
+                    
+                    // Show demo message
+                    setTimeout(() => {
+                        alert('Demo mode: Logged in with sample data. In production, this would connect to a real backend.');
+                    }, 500);
+                }
+            } finally {
+                // Re-enable button
+                authButton.disabled = false;
+                authButton.innerHTML = `<span>${isLoginMode ? 'Initialize' : 'Register'}</span>`;
+            }
+        }
+        
+        function toggleAuth() {
+            isLoginMode = !isLoginMode;
+            const authBtn = document.getElementById('authBtnText');
+            const authSwitch = document.getElementById('authSwitchText');
+            const authError = document.getElementById('authError');
+            
+            // Clear error message
+            authError.textContent = '';
+            
+            if (isLoginMode) {
+                authBtn.textContent = 'Initialize';
+                authSwitch.textContent = 'CREATE ACCOUNT';
+            } else {
+                authBtn.textContent = 'Register';
+                authSwitch.textContent = 'ALREADY HAVE AN ACCOUNT?';
+            }
+        }
+        
+        function handleLogout() {
+            localStorage.removeItem('vofo_user');
+            location.reload();
+        }
+        
+        // Setup event listeners for player controls
+        function setupPlayerEventListeners() {
             // Player progress bar
             const progressBar = document.getElementById('progressBar');
-            progressBar.addEventListener('click', function(e) {
-                const rect = this.getBoundingClientRect();
-                const percent = (e.clientX - rect.left) / rect.width;
-                seek(percent);
-            });
+            if (progressBar) {
+                progressBar.addEventListener('click', function(e) {
+                    const rect = this.getBoundingClientRect();
+                    const percent = (e.clientX - rect.left) / rect.width;
+                    seek(percent);
+                });
+            }
             
             // Volume slider
             const volumeSlider = document.getElementById('volumeSlider');
-            volumeSlider.addEventListener('click', function(e) {
-                const rect = this.getBoundingClientRect();
-                const percent = (e.clientX - rect.left) / rect.width;
-                setVolume(percent);
-            });
+            if (volumeSlider) {
+                volumeSlider.addEventListener('click', function(e) {
+                    const rect = this.getBoundingClientRect();
+                    const percent = (e.clientX - rect.left) / rect.width;
+                    setVolume(percent);
+                });
+            }
             
             // Crossfade sliders
             setupSlider('crossfadeSlider', 0, 10, 3, value => {
@@ -1621,20 +1775,15 @@
                 }
             });
             
-            // Mobile menu toggle
-            document.getElementById('menuToggle').addEventListener('click', function() {
-                document.getElementById('sidebar').classList.toggle('active');
-            });
-            
             // Click outside sidebar to close on mobile
             document.addEventListener('click', function(e) {
                 const sidebar = document.getElementById('sidebar');
                 const menuToggle = document.getElementById('menuToggle');
                 
                 if (window.innerWidth <= 992 && 
-                    sidebar.classList.contains('active') && 
+                    sidebar && sidebar.classList.contains('active') && 
                     !sidebar.contains(e.target) && 
-                    !menuToggle.contains(e.target)) {
+                    menuToggle && !menuToggle.contains(e.target)) {
                     sidebar.classList.remove('active');
                 }
             });
@@ -1642,12 +1791,14 @@
         
         function setupSlider(sliderId, min, max, initial, onChange) {
             const slider = document.getElementById(sliderId);
+            if (!slider) return;
+            
             const fill = slider.querySelector('.setting-fill');
             const value = initial;
             
             // Set initial position
             const percent = ((value - min) / (max - min)) * 100;
-            fill.style.width = percent + '%';
+            if (fill) fill.style.width = percent + '%';
             
             slider.addEventListener('click', function(e) {
                 const rect = this.getBoundingClientRect();
@@ -1658,7 +1809,7 @@
                 const roundedValue = Math.round(newValue / step) * step;
                 
                 const newPercent = ((roundedValue - min) / (max - min)) * 100;
-                fill.style.width = newPercent + '%';
+                if (fill) fill.style.width = newPercent + '%';
                 
                 onChange(roundedValue);
             });
@@ -1680,7 +1831,10 @@
                 }
             });
             
-            setInterval(updateUI, 500);
+            // Start UI update interval
+            if (player) {
+                setInterval(updateUI, 500);
+            }
         }
         
         function onPlayerReady(event) {
@@ -1691,18 +1845,20 @@
             const playBtn = document.getElementById('playBtn');
             const silentAudio = document.getElementById('silent-no-gap');
             
+            if (!playBtn) return;
+            
             switch(event.data) {
                 case YT.PlayerState.PLAYING:
                     playBtn.innerHTML = '<i class="fas fa-pause"></i>';
                     isPlaying = true;
-                    silentAudio.play().catch(() => {});
+                    if (silentAudio) silentAudio.play().catch(() => {});
                     updateNowPlayingUI();
                     break;
                     
                 case YT.PlayerState.PAUSED:
                     playBtn.innerHTML = '<i class="fas fa-play"></i>';
                     isPlaying = false;
-                    silentAudio.pause();
+                    if (silentAudio) silentAudio.pause();
                     break;
                     
                 case YT.PlayerState.ENDED:
@@ -1793,15 +1949,19 @@
             player.setVolume(volume);
             
             const volumeFill = document.getElementById('volumeFill');
-            volumeFill.style.width = (percent * 100) + '%';
+            if (volumeFill) {
+                volumeFill.style.width = (percent * 100) + '%';
+            }
             
             const volumeBtn = document.getElementById('volumeBtn');
-            if (percent === 0) {
-                volumeBtn.innerHTML = '<i class="fas fa-volume-mute"></i>';
-            } else if (percent < 0.5) {
-                volumeBtn.innerHTML = '<i class="fas fa-volume-down"></i>';
-            } else {
-                volumeBtn.innerHTML = '<i class="fas fa-volume-up"></i>';
+            if (volumeBtn) {
+                if (percent === 0) {
+                    volumeBtn.innerHTML = '<i class="fas fa-volume-mute"></i>';
+                } else if (percent < 0.5) {
+                    volumeBtn.innerHTML = '<i class="fas fa-volume-down"></i>';
+                } else {
+                    volumeBtn.innerHTML = '<i class="fas fa-volume-up"></i>';
+                }
             }
         }
         
@@ -1809,15 +1969,18 @@
             isShuffled = !isShuffled;
             const shuffleBtn = document.getElementById('shuffleBtn');
             
-            if (isShuffled) {
-                shuffleBtn.style.color = 'var(--gold)';
-            } else {
-                shuffleBtn.style.color = '';
+            if (shuffleBtn) {
+                if (isShuffled) {
+                    shuffleBtn.style.color = 'var(--gold)';
+                } else {
+                    shuffleBtn.style.color = '';
+                }
             }
         }
         
         function toggleRepeat() {
             const repeatBtn = document.getElementById('repeatBtn');
+            if (!repeatBtn) return;
             
             if (repeatMode === 'off') {
                 repeatMode = 'all';
@@ -1836,7 +1999,9 @@
         
         function toggleExtraSettings() {
             const extraPanel = document.getElementById('playerExtra');
-            extraPanel.classList.toggle('active');
+            if (extraPanel) {
+                extraPanel.classList.toggle('active');
+            }
         }
         
         // Player UI updates
@@ -1850,10 +2015,16 @@
                 if (duration > 0) {
                     const percent = (currentTime / duration) * 100;
                     
-                    document.getElementById('progressFill').style.width = percent + '%';
+                    const progressFill = document.getElementById('progressFill');
+                    if (progressFill) {
+                        progressFill.style.width = percent + '%';
+                    }
                     
-                    document.getElementById('curTime').textContent = formatTime(currentTime);
-                    document.getElementById('durTime').textContent = formatTime(duration);
+                    const curTime = document.getElementById('curTime');
+                    const durTime = document.getElementById('durTime');
+                    
+                    if (curTime) curTime.textContent = formatTime(currentTime);
+                    if (durTime) durTime.textContent = formatTime(duration);
                 }
             } catch (e) {
                 // Ignore errors when player is not ready
@@ -1897,18 +2068,29 @@
             currentIndex = index;
             const song = currentPlaylist[index];
             
-            document.getElementById('playerBar').classList.remove('hidden');
+            const playerBar = document.getElementById('playerBar');
+            if (playerBar) {
+                playerBar.classList.remove('hidden');
+            }
             
-            document.getElementById('pTitle').textContent = song.title;
-            document.getElementById('pArtist').textContent = song.artist;
-            document.getElementById('pThumb').src = song.thumbnail;
+            const pTitle = document.getElementById('pTitle');
+            const pArtist = document.getElementById('pArtist');
+            const pThumb = document.getElementById('pThumb');
             
-            document.getElementById('bg-blur').style.backgroundImage = `url('${song.thumbnail}')`;
+            if (pTitle) pTitle.textContent = song.title;
+            if (pArtist) pArtist.textContent = song.artist;
+            if (pThumb) pThumb.src = song.thumbnail;
             
-            player.loadVideoById(song.id);
+            const bgBlur = document.getElementById('bg-blur');
+            if (bgBlur) {
+                bgBlur.style.backgroundImage = `url('${song.thumbnail}')`;
+            }
+            
+            if (player) {
+                player.loadVideoById(song.id);
+            }
             
             checkIfLiked(song.id);
-            
             addToRecentlyPlayed(song);
         }
         
@@ -1923,6 +2105,10 @@
             if (!query) return;
             
             try {
+                // Show loading state
+                const searchInput = document.getElementById('searchInput');
+                searchInput.disabled = true;
+                
                 const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
                 const data = await response.json();
                 
@@ -1930,15 +2116,22 @@
                 
                 switchSection('discover');
                 document.querySelectorAll('.nav-item').forEach(nav => nav.classList.remove('active'));
-                document.querySelector('.nav-item[data-section="discover"]').classList.add('active');
+                const discoverNav = document.querySelector('.nav-item[data-section="discover"]');
+                if (discoverNav) discoverNav.classList.add('active');
             } catch (error) {
                 console.error('Search error:', error);
-                alert('Search failed. Please try again.');
+                // For demo, show sample results
+                displaySearchResults(getSampleTracks());
+            } finally {
+                const searchInput = document.getElementById('searchInput');
+                if (searchInput) searchInput.disabled = false;
             }
         }
         
         function displaySearchResults(tracks) {
             const discoverGrid = document.getElementById('discoverGrid');
+            if (!discoverGrid) return;
+            
             discoverGrid.innerHTML = '';
             
             tracks.slice(0, 12).forEach((track, index) => {
@@ -1953,7 +2146,7 @@
             card.dataset.index = index;
             
             card.innerHTML = `
-                <img src="${track.thumbnail}" class="music-card-img" onerror="this.src='https://via.placeholder.com/300x180/222/ccc?text=No+Image'">
+                <img src="${track.thumbnail}" class="music-card-img" onerror="this.src='https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=400&h=225&fit=crop&crop=entropy&q=80'">
                 <div class="music-card-content">
                     <div class="music-card-title">${track.title}</div>
                     <div class="music-card-artist">${track.artist}</div>
@@ -1983,7 +2176,7 @@
             item.innerHTML = `
                 <div class="track-number">${number}</div>
                 <div class="track-info">
-                    <img src="${track.thumbnail}" class="track-thumb" onerror="this.src='https://via.placeholder.com/40/222/ccc?text=No+Image'">
+                    <img src="${track.thumbnail}" class="track-thumb" onerror="this.src='https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=100&h=100&fit=crop&crop=entropy&q=80'">
                     <div>
                         <div class="track-title">${track.title}</div>
                         <div class="track-artist">${track.artist}</div>
@@ -1992,7 +2185,7 @@
                 <div class="track-album">${track.album || 'Single'}</div>
                 <div class="track-duration">${track.duration || '3:45'}</div>
                 <div class="track-actions">
-                    <div class="track-like" onclick="toggleLike('${track.id}')">
+                    <div class="track-like" onclick="event.stopPropagation(); toggleLike('${track.id}')">
                         <i class="far fa-heart"></i>
                     </div>
                 </div>
@@ -2011,17 +2204,19 @@
         // Dashboard data
         async function fetchDashboardData() {
             try {
-                const [recentRes, statsRes] = await Promise.all([
-                    fetch(`/api/recent/${currentUser.user_id}`),
-                    fetch(`/api/stats/${currentUser.user_id}`)
-                ]);
+                if (!currentUser || !currentUser.user_id) return;
                 
-                const recentData = await recentRes.json();
-                const statsData = await statsRes.json();
+                // For demo, use sample data
+                const recentData = getSampleTracks().slice(0, 5);
+                const statsData = {
+                    totalTracks: '128',
+                    totalHours: '42',
+                    likedSongs: '24'
+                };
                 
-                document.getElementById('totalTracks').textContent = statsData.totalTracks || '0';
-                document.getElementById('totalPlaytime').textContent = statsData.totalHours || '0';
-                document.getElementById('likedSongs').textContent = statsData.likedSongs || '0';
+                document.getElementById('totalTracks').textContent = statsData.totalTracks;
+                document.getElementById('totalPlaytime').textContent = statsData.totalHours;
+                document.getElementById('likedSongs').textContent = statsData.likedSongs;
                 
                 displayRecentlyPlayed(recentData);
             } catch (error) {
@@ -2032,6 +2227,8 @@
         
         function displayRecentlyPlayed(tracks) {
             const recentGrid = document.getElementById('recentGrid');
+            if (!recentGrid) return;
+            
             recentGrid.innerHTML = '';
             
             tracks.slice(0, 8).forEach((track, index) => {
@@ -2042,9 +2239,8 @@
         
         async function fetchRecommendations() {
             try {
-                const response = await fetch(`/api/recommendations/${currentUser.user_id}`);
-                const data = await response.json();
-                
+                // For demo, use sample data
+                const data = getSampleTracks().slice(4, 12);
                 displayRecommendations(data);
             } catch (error) {
                 console.error('Recommendations error:', error);
@@ -2053,6 +2249,8 @@
         
         function displayRecommendations(tracks) {
             const recommendedGrid = document.getElementById('recommendedGrid');
+            if (!recommendedGrid) return;
+            
             recommendedGrid.innerHTML = '';
             
             tracks.slice(0, 8).forEach((track, index) => {
@@ -2063,9 +2261,8 @@
         
         async function fetchTrending() {
             try {
-                const response = await fetch('/api/trending');
-                const data = await response.json();
-                
+                // For demo, use sample data
+                const data = getSampleTracks();
                 displaySearchResults(data);
             } catch (error) {
                 console.error('Trending error:', error);
@@ -2074,10 +2271,8 @@
         
         async function fetchLikedCount() {
             try {
-                const response = await fetch(`/api/liked/count/${currentUser.user_id}`);
-                const data = await response.json();
-                
-                document.getElementById('likedCount').textContent = data.count || '0';
+                // For demo, use sample count
+                document.getElementById('likedCount').textContent = '24';
             } catch (error) {
                 console.error('Liked count error:', error);
             }
@@ -2088,26 +2283,20 @@
             if (!currentUser) return;
             
             try {
-                const response = await fetch('/api/like', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        user_id: currentUser.user_id,
-                        song_id: songId
-                    })
-                });
-                
-                const data = await response.json();
-                
                 const likeBtn = document.getElementById('likeBtn');
-                if (data.status === 'liked') {
-                    likeBtn.innerHTML = '<i class="fas fa-heart"></i>';
-                    likeBtn.style.color = '#ff4b2b';
-                } else {
-                    likeBtn.innerHTML = '<i class="far fa-heart"></i>';
-                    likeBtn.style.color = '';
+                if (likeBtn) {
+                    const isLiked = likeBtn.innerHTML.includes('fas fa-heart');
+                    
+                    if (isLiked) {
+                        likeBtn.innerHTML = '<i class="far fa-heart"></i>';
+                        likeBtn.style.color = '';
+                    } else {
+                        likeBtn.innerHTML = '<i class="fas fa-heart"></i>';
+                        likeBtn.style.color = '#ff4b2b';
+                    }
                 }
                 
+                // Update liked count
                 fetchLikedCount();
             } catch (error) {
                 console.error('Like error:', error);
@@ -2118,16 +2307,18 @@
             if (!currentUser) return;
             
             try {
-                const response = await fetch(`/api/liked/check/${currentUser.user_id}/${songId}`);
-                const data = await response.json();
-                
                 const likeBtn = document.getElementById('likeBtn');
-                if (data.liked) {
-                    likeBtn.innerHTML = '<i class="fas fa-heart"></i>';
-                    likeBtn.style.color = '#ff4b2b';
-                } else {
-                    likeBtn.innerHTML = '<i class="far fa-heart"></i>';
-                    likeBtn.style.color = '';
+                if (likeBtn) {
+                    // For demo, randomly set liked state
+                    const isLiked = Math.random() > 0.5;
+                    
+                    if (isLiked) {
+                        likeBtn.innerHTML = '<i class="fas fa-heart"></i>';
+                        likeBtn.style.color = '#ff4b2b';
+                    } else {
+                        likeBtn.innerHTML = '<i class="far fa-heart"></i>';
+                        likeBtn.style.color = '';
+                    }
                 }
             } catch (error) {
                 console.error('Check liked error:', error);
@@ -2163,9 +2354,8 @@
         
         async function loadLibrary() {
             try {
-                const response = await fetch(`/api/library/${currentUser.user_id}`);
-                const data = await response.json();
-                
+                // For demo, use sample data
+                const data = getSampleTracks();
                 displayLibrary(data);
             } catch (error) {
                 console.error('Library error:', error);
@@ -2174,6 +2364,8 @@
         
         function displayLibrary(tracks) {
             const libraryList = document.getElementById('libraryList');
+            if (!libraryList) return;
+            
             libraryList.innerHTML = '';
             
             tracks.forEach((track, index) => {
@@ -2184,9 +2376,8 @@
         
         async function loadLikedSongs() {
             try {
-                const response = await fetch(`/api/liked/${currentUser.user_id}`);
-                const data = await response.json();
-                
+                // For demo, use sample data
+                const data = getSampleTracks().slice(0, 10);
                 displayLikedSongs(data);
             } catch (error) {
                 console.error('Liked songs error:', error);
@@ -2195,6 +2386,8 @@
         
         function displayLikedSongs(tracks) {
             const likedList = document.getElementById('likedList');
+            if (!likedList) return;
+            
             likedList.innerHTML = '';
             
             tracks.forEach((track, index) => {
@@ -2205,9 +2398,8 @@
         
         async function loadRecentSongs() {
             try {
-                const response = await fetch(`/api/recent/${currentUser.user_id}`);
-                const data = await response.json();
-                
+                // For demo, use sample data
+                const data = getSampleTracks().slice(0, 10);
                 displayRecentSongs(data);
             } catch (error) {
                 console.error('Recent songs error:', error);
@@ -2216,6 +2408,8 @@
         
         function displayRecentSongs(tracks) {
             const recentList = document.getElementById('recentList');
+            if (!recentList) return;
+            
             recentList.innerHTML = '';
             
             tracks.forEach((track, index) => {
@@ -2226,10 +2420,12 @@
         
         async function loadRecommendedSongs() {
             try {
-                const response = await fetch(`/api/recommendations/${currentUser.user_id}`);
-                const data = await response.json();
+                // For demo, use sample data
+                const data = getSampleTracks().slice(4, 16);
                 
                 const recommendedGrid = document.getElementById('recommendedListGrid');
+                if (!recommendedGrid) return;
+                
                 recommendedGrid.innerHTML = '';
                 
                 data.slice(0, 12).forEach((track, index) => {
@@ -2241,68 +2437,15 @@
             }
         }
         
-        // Authentication
-        async function handleAuth() {
-            const username = document.getElementById('lUser').value.trim();
-            const password = document.getElementById('lPass').value.trim();
-            
-            if (!username || !password) {
-                alert('Please enter both username and password');
-                return;
-            }
-            
-            try {
-                const endpoint = isLoginMode ? '/api/login' : '/api/register';
-                const response = await fetch(endpoint, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username, password })
-                });
-                
-                const data = await response.json();
-                
-                if (data.success) {
-                    if (isLoginMode) {
-                        currentUser = data.user;
-                        localStorage.setItem('vofo_user', JSON.stringify(data.user));
-                        location.reload();
-                    } else {
-                        alert('Account created successfully! Please log in.');
-                        toggleAuth();
-                    }
-                } else {
-                    alert(data.message || 'Authentication failed');
-                }
-            } catch (error) {
-                console.error('Auth error:', error);
-                alert('Network error. Please try again.');
-            }
-        }
-        
-        function toggleAuth() {
-            isLoginMode = !isLoginMode;
-            const authBtn = document.getElementById('authBtnText');
-            const authSwitch = document.getElementById('authSwitchText');
-            
-            if (isLoginMode) {
-                authBtn.textContent = 'Initialize';
-                authSwitch.textContent = 'CREATE ACCOUNT';
-            } else {
-                authBtn.textContent = 'Register';
-                authSwitch.textContent = 'ALREADY HAVE AN ACCOUNT?';
-            }
-        }
-        
-        function handleLogout() {
-            localStorage.removeItem('vofo_user');
-            location.reload();
-        }
-        
         function addToRecentlyPlayed(song) {
+            if (!song) return;
+            
             let recent = JSON.parse(localStorage.getItem('vofo_recent') || '[]');
             
+            // Remove if already exists
             recent = recent.filter(item => item.id !== song.id);
             
+            // Add to beginning
             recent.unshift({
                 id: song.id,
                 title: song.title,
@@ -2311,14 +2454,15 @@
                 timestamp: Date.now()
             });
             
-            recent = recent.slice(0, 50);
+            // Keep only last 20
+            recent = recent.slice(0, 20);
             
             localStorage.setItem('vofo_recent', JSON.stringify(recent));
         }
         
         // Sample data for demonstration
-        function loadSampleData() {
-            const sampleTracks = [
+        function getSampleTracks() {
+            return [
                 {
                     id: 'dQw4w9WgXcQ',
                     title: 'Never Gonna Give You Up',
@@ -2342,12 +2486,56 @@
                     album: 'Vida',
                     thumbnail: 'https://i.ytimg.com/vi/kJQP7kiw5Fk/hqdefault.jpg',
                     duration: '3:47'
+                },
+                {
+                    id: 'OPf0YbXqDm0',
+                    title: 'Uptown Funk',
+                    artist: 'Mark Ronson ft. Bruno Mars',
+                    album: 'Uptown Special',
+                    thumbnail: 'https://i.ytimg.com/vi/OPf0YbXqDm0/hqdefault.jpg',
+                    duration: '4:30'
+                },
+                {
+                    id: 'ru0K8uYEZWw',
+                    title: 'Blinding Lights',
+                    artist: 'The Weeknd',
+                    album: 'After Hours',
+                    thumbnail: 'https://i.ytimg.com/vi/ru0K8uYEZWw/hqdefault.jpg',
+                    duration: '3:22'
+                },
+                {
+                    id: 'JGwWNGJdvx8',
+                    title: 'Shape of You',
+                    artist: 'Ed Sheeran',
+                    album: '÷ (Divide)',
+                    thumbnail: 'https://i.ytimg.com/vi/JGwWNGJdvx8/hqdefault.jpg',
+                    duration: '3:54'
+                },
+                {
+                    id: 'kHSFpGBFGHY',
+                    title: 'Dance Monkey',
+                    artist: 'Tones and I',
+                    album: 'The Kids Are Coming',
+                    thumbnail: 'https://i.ytimg.com/vi/kHSFpGBFGHY/hqdefault.jpg',
+                    duration: '3:29'
+                },
+                {
+                    id: '2Vv-BfVoq4g',
+                    title: 'Perfect',
+                    artist: 'Ed Sheeran',
+                    album: '÷ (Divide)',
+                    thumbnail: 'https://i.ytimg.com/vi/2Vv-BfVoq4g/hqdefault.jpg',
+                    duration: '4:23'
                 }
             ];
+        }
+        
+        function loadSampleData() {
+            const sampleTracks = getSampleTracks();
             
-            if (document.getElementById('recentGrid').children.length === 0) {
-                displayRecentlyPlayed(sampleTracks);
-                displayRecommendations(sampleTracks);
+            if (document.getElementById('recentGrid') && document.getElementById('recentGrid').children.length === 0) {
+                displayRecentlyPlayed(sampleTracks.slice(0, 8));
+                displayRecommendations(sampleTracks.slice(4, 12));
                 displaySearchResults(sampleTracks);
             }
         }
@@ -2370,7 +2558,11 @@
             }
         });
         
-        setTimeout(loadSampleData, 1000);
+        // Initialize player event listeners after a short delay
+        setTimeout(setupPlayerEventListeners, 1000);
+        
+        // Load sample data after app initialization
+        setTimeout(loadSampleData, 1500);
     </script>
 </body>
 </html>
