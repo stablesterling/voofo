@@ -1,890 +1,143 @@
 import os
-import re
-import requests
-import urllib.parse
-from datetime import datetime
-from flask import Flask, render_template, request, jsonify, session
-from flask_cors import CORS
-from werkzeug.security import generate_password_hash, check_password_hash
-import jwt
-from functools import wraps
-import json
+import bcrypt
+import uvicorn
+from fastapi import FastAPI, HTTPException, Depends
+from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from sqlalchemy import create_engine, Column, Integer, String, ForeignKey
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, Session
+from ytmusicapi import YTMusic
+from pathlib import Path
 
-app = Flask(__name__, template_folder='.')
-app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
-CORS(app, supports_credentials=True)
+# --- DATABASE SETUP ---
+DB_URL = "postgresql://vofodb_user:Y7MQfAWwEtsiHQLiGHFV7ikOI2ruTv3u@dpg-d5lm4ongi27c7390kq40-a/vofodb"
+engine = create_engine(DB_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
 
-# Try to import psycopg2 with fallback
-try:
-    import psycopg2
-    import psycopg2.extras
-    PSYCOPG2_AVAILABLE = True
-except ImportError as e:
-    print(f"❌ psycopg2 import failed: {e}")
-    PSYCOPG2_AVAILABLE = False
+# --- MODELS ---
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True)
+    password = Column(String)
 
-# Database Configuration
-DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://vofodb_user:Y7MQfAWwEtsiHQLiGHFV7ikOI2ruTv3u@dpg-d5lm4ongi27c7390kq40-a/vofodb')
+class LikedSong(Base):
+    __tablename__ = "liked_songs"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    song_id = Column(String)
+    title = Column(String)
+    artist = Column(String)
+    thumbnail = Column(String)
 
-# Simple in-memory cache for search results
-search_cache = {}
+Base.metadata.create_all(bind=engine)
 
-# In-memory storage for fallback
-users_store = {}
-play_history_store = {}
-favorites_store = {}
-search_history_store = {}
+app = FastAPI()
+yt = YTMusic()
 
-# Initialize database connection
-def get_db_connection():
-    if not PSYCOPG2_AVAILABLE:
-        return None
-    
+# Enable CORS for all origins (Important for Mobile WebViews)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Define the base directory to find index.html reliably
+BASE_DIR = Path(__file__).resolve().parent
+
+# --- AUTH HELPERS ---
+def hash_password(password: str) -> str:
+    salt = bcrypt.gensalt()
+    hashed = bcrypt.hashpw(password.encode('utf-8'), salt)
+    return hashed.decode('utf-8')
+
+def verify_password(password: str, hashed: str) -> bool:
+    return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
+
+def get_db():
+    db = SessionLocal()
     try:
-        conn = psycopg2.connect(DATABASE_URL)
-        return conn
-    except Exception as e:
-        print(f"❌ Database connection error: {e}")
-        return None
+        yield db
+    finally:
+        db.close()
 
-# Initialize database tables
-def init_database():
-    if not PSYCOPG2_AVAILABLE:
-        print("⚠️ psycopg2 not available, using in-memory storage")
-        return
-    
-    conn = get_db_connection()
-    if not conn:
-        print("⚠️ Could not connect to database. Using in-memory storage.")
-        return
-    
+# --- AUTH ROUTES ---
+@app.post("/api/register")
+async def register(data: dict, db: Session = Depends(get_db)):
+    if not data.get('username') or not data.get('password'):
+        raise HTTPException(400, "Username and password required")
+    if db.query(User).filter(User.username == data['username']).first():
+        raise HTTPException(400, "Username already exists")
+    user = User(username=data['username'], password=hash_password(data['password']))
+    db.add(user)
+    db.commit()
+    return {"success": True}
+
+@app.post("/api/login")
+async def login(data: dict, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.username == data['username']).first()
+    if not user or not verify_password(data['password'], user.password):
+        raise HTTPException(401, "Invalid credentials")
+    return {"success": True, "user_id": user.id, "username": user.username}
+
+# --- LIKES ROUTES ---
+@app.post("/api/like")
+async def toggle_like(data: dict, db: Session = Depends(get_db)):
+    existing = db.query(LikedSong).filter(
+        LikedSong.user_id == data['user_id'], 
+        LikedSong.song_id == data['song_id']
+    ).first()
+    if existing:
+        db.delete(existing)
+        db.commit()
+        return {"status": "unliked"}
+    new_like = LikedSong(
+        user_id=data['user_id'], 
+        song_id=data['song_id'], 
+        title=data['title'], 
+        artist=data['artist'], 
+        thumbnail=data['thumbnail']
+    )
+    db.add(new_like)
+    db.commit()
+    return {"status": "liked"}
+
+@app.get("/api/liked/{user_id}")
+async def get_liked(user_id: int, db: Session = Depends(get_db)):
+    likes = db.query(LikedSong).filter(LikedSong.user_id == user_id).all()
+    return [{"id": l.song_id, "title": l.title, "artist": l.artist, "thumbnail": l.thumbnail} for l in likes]
+
+# --- MUSIC ROUTES ---
+@app.get("/api/trending")
+async def trending():
     try:
-        cur = conn.cursor()
-        
-        # Users table
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                id SERIAL PRIMARY KEY,
-                username VARCHAR(50) UNIQUE NOT NULL,
-                email VARCHAR(100),
-                password_hash VARCHAR(255) NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                preferences JSONB DEFAULT '{}'
-            )
-        ''')
-        
-        # Search history table
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS search_history (
-                id SERIAL PRIMARY KEY,
-                user_id INTEGER REFERENCES users(id),
-                query TEXT NOT NULL,
-                result_count INTEGER,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # Play history table
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS play_history (
-                id SERIAL PRIMARY KEY,
-                user_id INTEGER REFERENCES users(id),
-                video_id VARCHAR(20) NOT NULL,
-                title TEXT,
-                artist TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # Favorites table
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS favorites (
-                id SERIAL PRIMARY KEY,
-                user_id INTEGER REFERENCES users(id),
-                video_id VARCHAR(20) NOT NULL,
-                title TEXT,
-                artist TEXT,
-                thumbnail TEXT,
-                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(user_id, video_id)
-            )
-        ''')
-        
-        conn.commit()
-        cur.close()
-        conn.close()
-        print("✅ Database tables initialized successfully")
-        
-    except Exception as e:
-        print(f"❌ Database initialization error: {e}")
-
-# YouTube search functions
-def extract_video_id(url):
-    """Extract YouTube video ID from URL"""
-    patterns = [
-        r'(?:youtube\.com\/watch\?v=)([^&]+)',
-        r'(?:youtu\.be\/)([^?]+)',
-        r'(?:youtube\.com\/embed\/)([^?]+)',
-        r'(?:youtube\.com\/v\/)([^?]+)'
-    ]
-    
-    for pattern in patterns:
-        match = re.search(pattern, url)
-        if match:
-            return match.group(1)
-    
-    return None
-
-def search_youtube(query, max_results=10):
-    """Search YouTube using web scraping approach"""
-    try:
-        encoded_query = urllib.parse.quote(query)
-        search_url = f"https://www.youtube.com/results?search_query={encoded_query}"
-        
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
-        
-        response = requests.get(search_url, headers=headers, timeout=10)
-        html_content = response.text
-        
-        videos = []
-        
-        # Look for video IDs in the HTML
-        video_id_pattern = r'"videoId":"([^"]{11})"'
-        video_ids = list(set(re.findall(video_id_pattern, html_content)))
-        
-        # Get titles
-        title_pattern = r'"title":{"runs":\[{"text":"([^"]+)"'
-        titles = re.findall(title_pattern, html_content)
-        
-        # Get channels
-        channel_pattern = r'"ownerText":{"runs":\[{"text":"([^"]+)"'
-        channels = re.findall(channel_pattern, html_content)
-        
-        # Get durations
-        duration_pattern = r'"lengthText":{"simpleText":"([^"]+)"'
-        durations = re.findall(duration_pattern, html_content)
-        
-        # Combine data
-        for i, video_id in enumerate(video_ids[:max_results]):
-            title = titles[i] if i < len(titles) else "Unknown Title"
-            channel = channels[i] if i < len(channels) else "Unknown Artist"
-            duration = durations[i] if i < len(durations) else "N/A"
-            
-            videos.append({
-                'id': video_id,
-                'title': title[:80],
-                'artist': channel,
-                'channel': channel,
-                'duration': duration,
-                'thumbnail': f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
-                'url': f'https://www.youtube.com/watch?v={video_id}'
-            })
-        
-        return videos
-    
-    except Exception as e:
-        print(f"Search error: {e}")
+        songs = yt.get_charts(country="IN")['songs']['items']
+        return [{"id": s['videoId'], "title": s['title'], "artist": s['artists'][0]['name'], "thumbnail": s['thumbnails'][-1]['url']} for s in songs[:15]]
+    except Exception:
         return []
 
-# Authentication decorator
-def token_required(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        token = None
-        
-        # Check for token in Authorization header
-        if 'Authorization' in request.headers:
-            auth_header = request.headers['Authorization']
-            if auth_header.startswith('Bearer '):
-                token = auth_header.split(' ')[1]
-        
-        # Fallback to session
-        if not token and 'token' in session:
-            token = session.get('token')
-        
-        if not token:
-            return jsonify({'success': False, 'error': 'Token is missing'}), 401
-        
-        try:
-            data = jwt.decode(token, app.secret_key, algorithms=['HS256'])
-            user_id = data['user_id']
-            username = data['username']
-            
-            # Check if user exists (in database or memory)
-            if PSYCOPG2_AVAILABLE:
-                conn = get_db_connection()
-                if conn:
-                    cur = conn.cursor()
-                    cur.execute('SELECT id, username, email FROM users WHERE id = %s', (user_id,))
-                    user = cur.fetchone()
-                    cur.close()
-                    conn.close()
-                    
-                    if user:
-                        current_user = {
-                            'id': user[0],
-                            'username': user[1],
-                            'email': user[2]
-                        }
-                        return f(current_user, *args, **kwargs)
-            else:
-                # Check in-memory storage
-                if user_id in users_store:
-                    current_user = users_store[user_id]
-                    return f(current_user, *args, **kwargs)
-                    
-        except Exception as e:
-            print(f"Token validation error: {e}")
-            return jsonify({'success': False, 'error': 'Token is invalid'}), 401
-        
-        return jsonify({'success': False, 'error': 'Token is invalid'}), 401
-    return decorated
-
-# Routes
-@app.route('/')
-def index():
-    """Serve the main page"""
-    return render_template('index.html')
-
-# Authentication routes
-@app.route('/api/register', methods=['POST'])
-def register():
-    """Register a new user"""
+@app.get("/api/search")
+async def search(q: str):
     try:
-        data = request.json
-        username = data.get('username', '').strip()
-        email = data.get('email', '').strip()
-        password = data.get('password', '').strip()
-        
-        if not username or not password:
-            return jsonify({'success': False, 'error': 'Username and password are required'}), 400
-        
-        if len(password) < 6:
-            return jsonify({'success': False, 'error': 'Password must be at least 6 characters'}), 400
-        
-        password_hash = generate_password_hash(password)
-        
-        # Try database first
-        if PSYCOPG2_AVAILABLE:
-            conn = get_db_connection()
-            if conn:
-                try:
-                    cur = conn.cursor()
-                    cur.execute(
-                        'INSERT INTO users (username, email, password_hash) VALUES (%s, %s, %s) RETURNING id',
-                        (username, email, password_hash)
-                    )
-                    user_id = cur.fetchone()[0]
-                    conn.commit()
-                    cur.close()
-                    conn.close()
-                    
-                    # Create token
-                    token = jwt.encode(
-                        {'user_id': user_id, 'username': username},
-                        app.secret_key,
-                        algorithm='HS256'
-                    )
-                    
-                    # Store in session
-                    session['user_id'] = user_id
-                    session['token'] = token
-                    session['username'] = username
-                    
-                    return jsonify({
-                        'success': True,
-                        'message': 'Registration successful',
-                        'user': {
-                            'id': user_id,
-                            'username': username,
-                            'email': email
-                        },
-                        'token': token
-                    })
-                    
-                except Exception as e:
-                    return jsonify({'success': False, 'error': str(e)}), 400
-        
-        # Fallback to in-memory storage
-        user_id = str(len(users_store) + 1)
-        users_store[user_id] = {
-            'id': user_id,
-            'username': username,
-            'email': email,
-            'password_hash': password_hash
-        }
-        
-        # Create token
-        token = jwt.encode(
-            {'user_id': user_id, 'username': username},
-            app.secret_key,
-            algorithm='HS256'
-        )
-        
-        # Store in session
-        session['user_id'] = user_id
-        session['token'] = token
-        session['username'] = username
-        
-        return jsonify({
-            'success': True,
-            'message': 'Registration successful (using in-memory storage)',
-            'user': {
-                'id': user_id,
-                'username': username,
-                'email': email
-            },
-            'token': token
-        })
-    
-    except Exception as e:
-        print(f"Registration error: {e}")
-        return jsonify({'success': False, 'error': 'Registration failed'}), 500
+        results = yt.search(q, filter="songs")
+        return [{"id": r['videoId'], "title": r['title'], "artist": r['artists'][0]['name'], "thumbnail": r['thumbnails'][-1]['url']} for r in results]
+    except Exception:
+        return []
 
-@app.route('/api/login', methods=['POST'])
-def login():
-    """Login user"""
-    try:
-        data = request.json
-        username = data.get('username', '').strip()
-        password = data.get('password', '').strip()
-        
-        if not username or not password:
-            return jsonify({'success': False, 'error': 'Username and password are required'}), 400
-        
-        # Try database first
-        if PSYCOPG2_AVAILABLE:
-            conn = get_db_connection()
-            if conn:
-                cur = conn.cursor()
-                cur.execute(
-                    'SELECT id, username, email, password_hash FROM users WHERE username = %s',
-                    (username,)
-                )
-                user = cur.fetchone()
-                cur.close()
-                conn.close()
-                
-                if user and check_password_hash(user[3], password):
-                    # Create token
-                    token = jwt.encode(
-                        {'user_id': user[0], 'username': user[1]},
-                        app.secret_key,
-                        algorithm='HS256'
-                    )
-                    
-                    # Store in session
-                    session['user_id'] = user[0]
-                    session['token'] = token
-                    session['username'] = user[1]
-                    
-                    return jsonify({
-                        'success': True,
-                        'message': 'Login successful',
-                        'user': {
-                            'id': user[0],
-                            'username': user[1],
-                            'email': user[2]
-                        },
-                        'token': token
-                    })
-        
-        # Fallback to in-memory storage
-        for user_id, user_data in users_store.items():
-            if user_data['username'] == username and check_password_hash(user_data['password_hash'], password):
-                token = jwt.encode(
-                    {'user_id': user_id, 'username': username},
-                    app.secret_key,
-                    algorithm='HS256'
-                )
-                
-                session['user_id'] = user_id
-                session['token'] = token
-                session['username'] = username
-                
-                return jsonify({
-                    'success': True,
-                    'message': 'Login successful (using in-memory storage)',
-                    'user': {
-                        'id': user_id,
-                        'username': username,
-                        'email': user_data['email']
-                    },
-                    'token': token
-                })
-        
-        return jsonify({'success': False, 'error': 'Invalid username or password'}), 401
-    
-    except Exception as e:
-        print(f"Login error: {e}")
-        return jsonify({'success': False, 'error': 'Login failed'}), 500
+# --- SERVING THE FRONTEND ---
+@app.get("/")
+async def serve_home():
+    # Use FileResponse for better efficiency and automatic media_type detection
+    html_file = BASE_DIR / "index.html"
+    if not html_file.exists():
+        return HTMLResponse(content="<h1>index.html not found on server</h1>", status_code=404)
+    return FileResponse(html_file)
 
-@app.route('/api/logout', methods=['POST'])
-def logout():
-    """Logout user"""
-    session.clear()
-    return jsonify({'success': True, 'message': 'Logged out successfully'})
-
-@app.route('/api/check-auth', methods=['GET'])
-def check_auth():
-    """Check if user is authenticated"""
-    token = None
-    
-    # Check Authorization header
-    if 'Authorization' in request.headers:
-        auth_header = request.headers['Authorization']
-        if auth_header.startswith('Bearer '):
-            token = auth_header.split(' ')[1]
-    
-    # Fallback to session
-    if not token and 'token' in session:
-        token = session.get('token')
-    
-    if not token:
-        return jsonify({'authenticated': False})
-    
-    try:
-        data = jwt.decode(token, app.secret_key, algorithms=['HS256'])
-        user_id = data['user_id']
-        username = data['username']
-        
-        # Check if user exists
-        if PSYCOPG2_AVAILABLE:
-            conn = get_db_connection()
-            if conn:
-                cur = conn.cursor()
-                cur.execute('SELECT id, username, email FROM users WHERE id = %s', (user_id,))
-                user = cur.fetchone()
-                cur.close()
-                conn.close()
-                
-                if user:
-                    return jsonify({
-                        'authenticated': True,
-                        'user': {
-                            'id': user[0],
-                            'username': user[1],
-                            'email': user[2]
-                        }
-                    })
-        else:
-            # Check in-memory storage
-            if user_id in users_store:
-                user_data = users_store[user_id]
-                return jsonify({
-                    'authenticated': True,
-                    'user': {
-                        'id': user_id,
-                        'username': user_data['username'],
-                        'email': user_data['email']
-                    }
-                })
-    except:
-        pass
-    
-    return jsonify({'authenticated': False})
-
-# Music routes
-@app.route('/api/search', methods=['GET'])
-def search():
-    """Search for YouTube videos"""
-    try:
-        query = request.args.get('q', '').strip()
-        
-        if not query:
-            return jsonify([])
-        
-        print(f"🔍 Searching for: {query}")
-        
-        # Check cache first
-        cache_key = query.lower()
-        if cache_key in search_cache:
-            print("📦 Returning cached results")
-            return jsonify(search_cache[cache_key])
-        
-        # Search YouTube
-        videos = search_youtube(query, max_results=15)
-        
-        if not videos:
-            # Try a fallback search
-            print("⚠️ No videos found with regex, trying fallback...")
-            videos = [{
-                'id': 'dQw4w9WgXcQ',
-                'title': 'Rick Astley - Never Gonna Give You Up',
-                'artist': 'Rick Astley',
-                'channel': 'Rick Astley',
-                'duration': '3:32',
-                'thumbnail': 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
-                'url': 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
-            }, {
-                'id': 'kJQP7kiw5Fk',
-                'title': 'Luis Fonsi - Despacito ft. Daddy Yankee',
-                'artist': 'Luis Fonsi',
-                'channel': 'Luis Fonsi',
-                'duration': '4:41',
-                'thumbnail': 'https://i.ytimg.com/vi/kJQP7kiw5Fk/hqdefault.jpg',
-                'url': 'https://www.youtube.com/watch?v=kJQP7kiw5Fk'
-            }, {
-                'id': '09R8_2nJtjg',
-                'title': 'Maroon 5 - Sugar',
-                'artist': 'Maroon 5',
-                'channel': 'Maroon 5',
-                'duration': '5:01',
-                'thumbnail': 'https://i.ytimg.com/vi/09R8_2nJtjg/hqdefault.jpg',
-                'url': 'https://www.youtube.com/watch?v=09R8_2nJtjg'
-            }]
-        
-        # Cache the results
-        search_cache[cache_key] = videos
-        
-        print(f"✅ Found {len(videos)} videos")
-        return jsonify(videos)
-    
-    except Exception as e:
-        print(f"❌ Search endpoint error: {str(e)}")
-        return jsonify([])
-
-@app.route('/api/play', methods=['POST'])
-@token_required
-def play(current_user):
-    """Get stream URL for a video and log play history"""
-    try:
-        data = request.json
-        video_id = data.get('url', '').strip()
-        
-        if not video_id:
-            return jsonify({'success': False, 'error': 'No video ID provided'}), 400
-        
-        # Get video info for logging
-        videos = search_youtube(video_id, max_results=1)
-        video_info = videos[0] if videos else {
-            'title': 'Unknown Title',
-            'artist': 'Unknown Artist',
-            'thumbnail': f'https://i.ytimg.com/vi/{video_id}/hqdefault.jpg'
-        }
-        
-        # Log play history
-        if PSYCOPG2_AVAILABLE:
-            conn = get_db_connection()
-            if conn:
-                cur = conn.cursor()
-                cur.execute(
-                    'INSERT INTO play_history (user_id, video_id, title, artist) VALUES (%s, %s, %s, %s)',
-                    (current_user['id'], video_id, video_info['title'], video_info['artist'])
-                )
-                conn.commit()
-                cur.close()
-                conn.close()
-        else:
-            # Store in memory
-            user_id = current_user['id']
-            if user_id not in play_history_store:
-                play_history_store[user_id] = []
-            play_history_store[user_id].append({
-                'video_id': video_id,
-                'title': video_info['title'],
-                'artist': video_info['artist'],
-                'created_at': datetime.now().isoformat()
-            })
-        
-        return jsonify({
-            'success': True,
-            'stream_url': f"https://www.youtube.com/embed/{video_id}?autoplay=1&controls=0&modestbranding=1&rel=0",
-            'video_id': video_id,
-            'title': video_info['title'],
-            'artist': video_info['artist'],
-            'thumbnail': video_info['thumbnail']
-        })
-    
-    except Exception as e:
-        print(f"❌ Play error: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/favorites/add', methods=['POST'])
-@token_required
-def add_favorite(current_user):
-    """Add a song to favorites"""
-    try:
-        data = request.json
-        video_id = data.get('video_id', '').strip()
-        title = data.get('title', '').strip()
-        artist = data.get('artist', '').strip()
-        thumbnail = data.get('thumbnail', '').strip()
-        
-        if not video_id:
-            return jsonify({'success': False, 'error': 'Video ID is required'}), 400
-        
-        if PSYCOPG2_AVAILABLE:
-            conn = get_db_connection()
-            if conn:
-                try:
-                    cur = conn.cursor()
-                    cur.execute(
-                        'INSERT INTO favorites (user_id, video_id, title, artist, thumbnail) VALUES (%s, %s, %s, %s, %s)',
-                        (current_user['id'], video_id, title, artist, thumbnail)
-                    )
-                    conn.commit()
-                    cur.close()
-                    conn.close()
-                    return jsonify({'success': True, 'message': 'Added to favorites'})
-                except Exception as e:
-                    return jsonify({'success': False, 'error': str(e)}), 400
-        
-        # Fallback to memory storage
-        user_id = current_user['id']
-        if user_id not in favorites_store:
-            favorites_store[user_id] = []
-        
-        # Check if already exists
-        for fav in favorites_store[user_id]:
-            if fav['video_id'] == video_id:
-                return jsonify({'success': False, 'error': 'Already in favorites'}), 400
-        
-        favorites_store[user_id].append({
-            'video_id': video_id,
-            'title': title,
-            'artist': artist,
-            'thumbnail': thumbnail,
-            'added_at': datetime.now().isoformat()
-        })
-        
-        return jsonify({'success': True, 'message': 'Added to favorites (in-memory)'})
-    
-    except Exception as e:
-        print(f"❌ Add favorite error: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/favorites/remove', methods=['POST'])
-@token_required
-def remove_favorite(current_user):
-    """Remove a song from favorites"""
-    try:
-        data = request.json
-        video_id = data.get('video_id', '').strip()
-        
-        if not video_id:
-            return jsonify({'success': False, 'error': 'Video ID is required'}), 400
-        
-        if PSYCOPG2_AVAILABLE:
-            conn = get_db_connection()
-            if conn:
-                cur = conn.cursor()
-                cur.execute(
-                    'DELETE FROM favorites WHERE user_id = %s AND video_id = %s',
-                    (current_user['id'], video_id)
-                )
-                conn.commit()
-                cur.close()
-                conn.close()
-                return jsonify({'success': True, 'message': 'Removed from favorites'})
-        
-        # Fallback to memory storage
-        user_id = current_user['id']
-        if user_id in favorites_store:
-            favorites_store[user_id] = [fav for fav in favorites_store[user_id] if fav['video_id'] != video_id]
-        
-        return jsonify({'success': True, 'message': 'Removed from favorites (in-memory)'})
-    
-    except Exception as e:
-        print(f"❌ Remove favorite error: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/favorites', methods=['GET'])
-@token_required
-def get_favorites(current_user):
-    """Get user's favorite songs"""
-    try:
-        if PSYCOPG2_AVAILABLE:
-            conn = get_db_connection()
-            if conn:
-                cur = conn.cursor()
-                cur.execute(
-                    'SELECT video_id, title, artist, thumbnail, added_at FROM favorites WHERE user_id = %s ORDER BY added_at DESC',
-                    (current_user['id'],)
-                )
-                favorites = cur.fetchall()
-                cur.close()
-                conn.close()
-                
-                return jsonify({
-                    'success': True,
-                    'favorites': [
-                        {
-                            'id': fav[0],
-                            'title': fav[1],
-                            'artist': fav[2],
-                            'thumbnail': fav[3],
-                            'added_at': fav[4].isoformat() if fav[4] else None
-                        }
-                        for fav in favorites
-                    ]
-                })
-        
-        # Fallback to memory storage
-        user_id = current_user['id']
-        favorites = favorites_store.get(user_id, [])
-        
-        return jsonify({
-            'success': True,
-            'favorites': favorites
-        })
-    
-    except Exception as e:
-        print(f"❌ Get favorites error: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/profile', methods=['GET'])
-@token_required
-def profile(current_user):
-    """Get user profile with stats"""
-    try:
-        play_count = 0
-        search_count = 0
-        favorites_count = 0
-        recent_plays = []
-        
-        if PSYCOPG2_AVAILABLE:
-            conn = get_db_connection()
-            if conn:
-                cur = conn.cursor()
-                
-                # Get play count
-                cur.execute('SELECT COUNT(*) FROM play_history WHERE user_id = %s', (current_user['id'],))
-                play_count = cur.fetchone()[0] or 0
-                
-                # Get search count
-                cur.execute('SELECT COUNT(*) FROM search_history WHERE user_id = %s', (current_user['id'],))
-                search_count = cur.fetchone()[0] or 0
-                
-                # Get favorites count
-                cur.execute('SELECT COUNT(*) FROM favorites WHERE user_id = %s', (current_user['id'],))
-                favorites_count = cur.fetchone()[0] or 0
-                
-                # Get recent plays
-                cur.execute('''
-                    SELECT video_id, title, artist, created_at 
-                    FROM play_history 
-                    WHERE user_id = %s 
-                    ORDER BY created_at DESC 
-                    LIMIT 10
-                ''', (current_user['id'],))
-                recent_plays_data = cur.fetchall()
-                
-                cur.close()
-                conn.close()
-                
-                recent_plays = [
-                    {
-                        'video_id': play[0],
-                        'title': play[1],
-                        'artist': play[2],
-                        'played_at': play[3].isoformat() if play[3] else None
-                    }
-                    for play in recent_plays_data
-                ]
-        
-        return jsonify({
-            'success': True,
-            'user': current_user,
-            'stats': {
-                'play_count': play_count,
-                'search_count': search_count,
-                'favorites_count': favorites_count
-            },
-            'recent_plays': recent_plays
-        })
-    
-    except Exception as e:
-        print(f"❌ Profile error: {e}")
-        return jsonify({'success': False, 'error': 'Failed to get profile'}), 500
-
-@app.route('/api/history/plays', methods=['GET'])
-@token_required
-def get_play_history(current_user):
-    """Get user's play history"""
-    try:
-        if PSYCOPG2_AVAILABLE:
-            conn = get_db_connection()
-            if conn:
-                cur = conn.cursor()
-                cur.execute('''
-                    SELECT video_id, title, artist, created_at 
-                    FROM play_history 
-                    WHERE user_id = %s 
-                    ORDER BY created_at DESC
-                    LIMIT 50
-                ''', (current_user['id'],))
-                history = cur.fetchall()
-                cur.close()
-                conn.close()
-                
-                return jsonify({
-                    'success': True,
-                    'history': [
-                        {
-                            'video_id': item[0],
-                            'title': item[1],
-                            'artist': item[2],
-                            'played_at': item[3].isoformat() if item[3] else None
-                        }
-                        for item in history
-                    ]
-                })
-        
-        # Fallback to memory storage
-        user_id = current_user['id']
-        history = play_history_store.get(user_id, [])
-        
-        return jsonify({
-            'success': True,
-            'history': history[:50]  # Limit to 50
-        })
-    
-    except Exception as e:
-        print(f"❌ History error: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-# Health check endpoint
-@app.route('/api/health', methods=['GET'])
-def health():
-    """Health check endpoint"""
-    return jsonify({
-        'status': 'healthy',
-        'service': 'VoFo Music API',
-        'database': 'connected' if PSYCOPG2_AVAILABLE and get_db_connection() else 'disconnected',
-        'storage': 'in-memory' if not PSYCOPG2_AVAILABLE else 'database'
-    })
-
-# Error handlers
-@app.errorhandler(404)
-def not_found(error):
-    return jsonify({'success': False, 'error': 'Not found'}), 404
-
-@app.errorhandler(500)
-def internal_error(error):
-    return jsonify({'success': False, 'error': 'Internal server error'}), 500
-
-if __name__ == '__main__':
-    # Initialize database on startup
-    init_database()
-    
-    print("🚀 VoFo Music Server Starting...")
-    print(f"📦 Database: {'Connected' if PSYCOPG2_AVAILABLE else 'Using in-memory storage'}")
-    print("📡 API Endpoints:")
-    print("   GET  /                    - Serve frontend")
-    print("   POST /api/register        - Register new user")
-    print("   POST /api/login           - Login user")
-    print("   POST /api/logout          - Logout user")
-    print("   GET  /api/check-auth      - Check authentication")
-    print("   GET  /api/search?q=       - Search for music")
-    print("   POST /api/play            - Play a song")
-    print("   GET  /api/profile         - Get user profile")
-    print("   GET  /api/favorites       - Get favorites")
-    print("   POST /api/favorites/add   - Add to favorites")
-    print("   GET  /api/history/plays   - Get play history")
-    print("\n🔗 Open http://localhost:5000 in your browser")
-    
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
