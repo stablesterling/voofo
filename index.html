@@ -107,17 +107,6 @@
             }
         }
         
-        @keyframes slideFromLeft {
-            0% {
-                transform: translateX(-100%);
-                opacity: 0;
-            }
-            100% {
-                transform: translateX(0);
-                opacity: 1;
-            }
-        }
-        
         @keyframes fadeIn {
             from { opacity: 0; }
             to { opacity: 1; }
@@ -397,24 +386,22 @@
             letter-spacing: 1px;
         }
 
-        /* CARPLAY/ANDROID AUTO PLAYER - COMPLETELY REDESIGNED */
+        /* PLAYER BAR - Updated */
         .player { 
             position: fixed; 
             bottom: 0; 
-            left: 0; 
             width: 100%; 
-            background: rgba(0, 0, 0, 0.95); 
-            backdrop-filter: blur(30px); 
-            padding: 20px; 
+            background: rgba(0,0,0,.85); 
+            backdrop-filter: blur(20px); 
+            padding: 15px 20px; 
             display: flex; 
+            gap: 20px; 
             align-items: center; 
-            gap: 25px; 
-            border-top: 2px solid rgba(197,163,103,0.3); 
+            border-top: 1px solid rgba(197,163,103,0.2); 
             z-index: 1000;
             transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-            animation: slideFromLeft 0.5s ease-out;
+            animation: slideUp 0.5s ease-out;
         }
-        
         .player.expanded { 
             bottom: 0; 
             left: 0; 
@@ -422,250 +409,62 @@
             height: 100%; 
             border-radius: 0; 
             flex-direction: column; 
-            justify-content: flex-start; 
+            justify-content: center; 
             gap: 40px;
-            background: rgba(0,0,0,0.98);
-            padding: 80px 30px 30px; 
+            background: rgba(0,0,0,0.95);
+            padding: 60px 30px; 
         }
         
-        /* Left Side - Controller Section */
-        .player-left {
-            display: flex;
-            flex-direction: column;
-            align-items: flex-start;
-            gap: 20px;
-            min-width: 300px;
-            flex: 0 0 auto;
+        .p-thumb { 
+            width: 50px; 
+            height: 50px; 
+            border-radius: 4px; 
+            object-fit: cover; 
+            transition: all 0.3s ease;
+        }
+        .player.expanded .p-thumb { 
+            width: 70vw; 
+            height: 70vw; 
+            max-width: 300px; 
+            max-height: 300px; 
+            border-radius: 12px; 
+            box-shadow: 0 20px 50px rgba(0,0,0,0.5); 
         }
         
-        .player.expanded .player-left {
-            width: 100%;
-            max-width: 400px;
-            margin: 0 auto;
-            align-items: center;
+        .player-info { 
+            flex: 1; 
+            min-width: 0; 
         }
-        
-        /* Controller Buttons Grid */
-        .controller-grid {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            grid-template-rows: repeat(2, 1fr);
-            gap: 15px;
-            width: 100%;
-            margin-top: 10px;
+        .player-info div:first-child { 
+            font-weight: 600; 
+            font-size: 14px; 
+            white-space: nowrap; 
+            overflow: hidden; 
+            text-overflow: ellipsis;
         }
-        
-        .controller-btn {
-            background: rgba(255, 255, 255, 0.07);
-            border: 1px solid rgba(197, 163, 103, 0.2);
-            color: var(--soft);
-            border-radius: 12px;
-            width: 70px;
-            height: 70px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            padding: 10px;
-        }
-        
-        .controller-btn:hover {
-            background: rgba(197, 163, 103, 0.2);
-            transform: scale(1.05);
-        }
-        
-        .controller-btn:active {
-            transform: scale(0.95);
-        }
-        
-        .controller-btn .icon {
-            font-size: 24px;
-            margin-bottom: 5px;
-        }
-        
-        .controller-btn .label {
-            font-size: 9px;
-            text-transform: uppercase;
+        .player-info div:last-child { 
+            font-size: 11px; 
+            color: var(--muted); 
+            text-transform: uppercase; 
             letter-spacing: 1px;
-            color: var(--muted);
+            white-space: nowrap; 
+            overflow: hidden; 
+            text-overflow: ellipsis;
         }
-        
-        .controller-btn.liked {
-            color: #ff4b2b;
-            border-color: rgba(255, 75, 43, 0.3);
+        .player.expanded .player-info { 
+            text-align: center; 
+            flex: 0; 
+            width: 100%; 
         }
-        
-        .controller-btn.play-pause {
-            grid-column: span 3;
-            background: var(--gold);
-            color: #000;
-            font-weight: bold;
-            height: 80px;
+        .player.expanded .player-info div:first-child { 
+            font-size: 24px; 
+            margin-bottom: 10px; 
+            white-space: normal;
         }
-        
-        .controller-btn.play-pause:hover {
-            background: #d4b57c;
+        .player.expanded .player-info div:last-child { 
+            font-size: 14px; 
         }
-        
-        /* Thumbnail Section */
-        .player-right {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            gap: 20px;
-            min-width: 0;
-        }
-        
-        .player.expanded .player-right {
-            width: 100%;
-            max-width: 600px;
-            margin: 0 auto;
-        }
-        
-        .thumbnail-container {
-            position: relative;
-            width: 100%;
-            border-radius: 16px;
-            overflow: hidden;
-            box-shadow: 0 15px 40px rgba(0,0,0,0.5);
-            aspect-ratio: 1/1;
-            max-width: 400px;
-        }
-        
-        .p-thumb {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-            transition: transform 0.5s ease;
-        }
-        
-        .thumbnail-container:hover .p-thumb {
-            transform: scale(1.02);
-        }
-        
-        .thumbnail-overlay {
-            position: absolute;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            background: linear-gradient(to top, rgba(0,0,0,0.9), transparent);
-            padding: 20px;
-            padding-top: 40px;
-        }
-        
-        .player-info {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-        }
-        
-        .player-info #pTitle {
-            font-size: 28px;
-            font-weight: 600;
-            line-height: 1.2;
-            margin: 0;
-        }
-        
-        .player-info #pArtist {
-            font-size: 16px;
-            color: var(--muted);
-            text-transform: uppercase;
-            letter-spacing: 2px;
-        }
-        
-        /* Progress Bar */
-        .progress-section {
-            width: 100%;
-            margin-top: 20px;
-        }
-        
-        .progress-container {
-            display: flex;
-            align-items: center;
-            gap: 15px;
-            width: 100%;
-            font-size: 14px;
-            color: var(--muted);
-        }
-        
-        #progress {
-            flex: 1;
-            -webkit-appearance: none;
-            height: 6px;
-            border-radius: 3px;
-            background: rgba(197,163,103,0.2);
-            cursor: pointer;
-        }
-        
-        #progress::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            width: 18px;
-            height: 18px;
-            border-radius: 50%;
-            background: var(--gold);
-            cursor: pointer;
-            border: 2px solid #000;
-            box-shadow: 0 0 10px rgba(197,163,103,0.5);
-        }
-        
-        /* Volume Control */
-        .volume-control {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            width: 100%;
-            margin-top: 15px;
-        }
-        
-        .volume-control .icon {
-            font-size: 20px;
-            color: var(--muted);
-            min-width: 20px;
-        }
-        
-        #volume {
-            flex: 1;
-            -webkit-appearance: none;
-            height: 4px;
-            border-radius: 2px;
-            background: rgba(197,163,103,0.2);
-            cursor: pointer;
-        }
-        
-        #volume::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            width: 14px;
-            height: 14px;
-            border-radius: 50%;
-            background: var(--gold);
-            cursor: pointer;
-        }
-        
-        /* Back Button */
-        .back-btn { 
-            position: absolute; 
-            top: 30px; 
-            right: 30px; 
-            font-size: 28px; 
-            color: var(--gold); 
-            display: none; 
-            cursor: pointer; 
-            padding: 10px; 
-            background: rgba(0,0,0,0.5);
-            border-radius: 50%;
-            width: 50px;
-            height: 50px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 1001;
-        }
-        .player:not(.expanded) .back-btn {
-            display: none;
-        }
-        
+
         #yt-player { 
             position: fixed; 
             top: -10px; 
@@ -674,6 +473,87 @@
             height: 1px; 
             opacity: 0; 
             pointer-events: none; 
+        }
+
+        .controls-main { 
+            display: flex; 
+            align-items: center; 
+            gap: 15px; 
+        }
+        .player.expanded .controls-main { 
+            gap: 30px; 
+            transform: scale(1.3); 
+        }
+        
+        .play-trigger { 
+            background: var(--gold); 
+            color: #000; 
+            width: 40px; 
+            height: 40px; 
+            border-radius: 50%; 
+            display: flex; 
+            align-items: center; 
+            justify-content: center; 
+            font-weight: bold; 
+            border: none; 
+            font-size: 14px; 
+            cursor: pointer;
+            transition: .3s;
+        }
+        .play-trigger:hover {
+            background: #d4b57c;
+            transform: scale(1.05);
+        }
+        
+        .progress-container { 
+            display: flex; 
+            align-items: center; 
+            gap: 10px; 
+            width: 100%; 
+            font-size: 11px; 
+            margin-top: 5px; 
+        }
+        #progress { 
+            flex: 1; 
+            -webkit-appearance: none;
+            height: 4px;
+            border-radius: 2px;
+            background: rgba(197,163,103,0.2);
+            cursor: pointer;
+        }
+        #progress::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: var(--gold);
+            cursor: pointer;
+        }
+        
+        .back-btn { 
+            position: absolute; 
+            top: 30px; 
+            left: 20px; 
+            font-size: 28px; 
+            color: var(--gold); 
+            display: none; 
+            cursor: pointer; 
+            padding: 10px; 
+        }
+        .player.expanded .back-btn { 
+            display: block; 
+        }
+
+        #likeBtn { 
+            font-size: 20px; 
+            color: var(--muted); 
+            cursor: pointer; 
+            transition: 0.3s; 
+            padding: 5px; 
+        }
+        #likeBtn.liked { 
+            color: #ff4b2b; 
+            transform: scale(1.1); 
         }
 
         /* Footer - Updated with animation */
@@ -728,29 +608,6 @@
         }
 
         /* Responsiveness */
-        @media (max-width: 1024px) {
-            .player {
-                flex-direction: column;
-                gap: 30px;
-            }
-            
-            .player-left {
-                width: 100%;
-                max-width: 500px;
-                align-items: center;
-            }
-            
-            .controller-grid {
-                max-width: 400px;
-                margin: 0 auto;
-            }
-            
-            .thumbnail-container {
-                max-width: 350px;
-                margin: 0 auto;
-            }
-        }
-        
         @media (max-width: 768px) {
             .footer-wrap {
                 grid-template-columns: 1fr;
@@ -767,69 +624,35 @@
             .track {
                 padding: 12px;
             }
+            .player {
+                flex-direction: column;
+                text-align: center;
+                gap: 15px;
+            }
+            .player-info {
+                width: 100%;
+                text-align: center;
+            }
             .track:hover {
                 transform: translateX(5px);
-            }
-            
-            .player {
-                padding: 15px;
-            }
-            
-            .controller-btn {
-                width: 60px;
-                height: 60px;
-            }
-            
-            .controller-btn .icon {
-                font-size: 20px;
-            }
-            
-            .player-info #pTitle {
-                font-size: 22px;
-            }
-            
-            .player-info #pArtist {
-                font-size: 14px;
             }
         }
         
         @media (max-width: 600px) {
             .nav-links span {
                 margin-left: 10px;
-                font-size: 9px;
             }
-            
-            .controller-grid {
-                gap: 10px;
-            }
-            
-            .controller-btn {
-                width: 50px;
-                height: 50px;
-            }
-            
-            .controller-btn .icon {
-                font-size: 18px;
-            }
-            
-            .controller-btn .label {
-                font-size: 8px;
-            }
-            
-            .thumbnail-container {
-                max-width: 280px;
-            }
-            
-            .player-info #pTitle {
-                font-size: 20px;
-            }
-            
-            .player-info #pArtist {
+            .player-info div:first-child {
                 font-size: 12px;
             }
-            
+            .player-info div:last-child {
+                font-size: 10px;
+            }
             #curTime, #durTime {
-                font-size: 12px;
+                display: none;
+            }
+            .player.expanded #curTime, .player.expanded #durTime {
+                display: inline;
             }
         }
     </style>
@@ -915,83 +738,28 @@
     </footer>
 </div>
 
-<!-- COMPLETELY REDESIGNED CARPLAY/ANDROID AUTO PLAYER -->
-<div class="player hidden" id="playerBar">
-    <div class="back-btn" onclick="closeExpand()">↓</div>
+<div class="player hidden" id="playerBar" onclick="toggleExpand(event)">
+    <div class="back-btn" onclick="closeExpand(event)">↓</div>
     <div id="yt-player"></div>
     
-    <!-- Left Side - Controller Section -->
-    <div class="player-left">
-        <div class="controller-grid">
-            <!-- Previous Track -->
-            <div class="controller-btn" onclick="skipPrev()">
-                <div class="icon">⏮</div>
-                <div class="label">Prev</div>
-            </div>
-            
-            <!-- Like Button -->
-            <div class="controller-btn" id="likeBtn" onclick="toggleLikeCurrent()">
-                <div class="icon">❤</div>
-                <div class="label">Like</div>
-            </div>
-            
-            <!-- Next Track -->
-            <div class="controller-btn" onclick="skipNext()">
-                <div class="icon">⏭</div>
-                <div class="label">Next</div>
-            </div>
-            
-            <!-- Shuffle -->
-            <div class="controller-btn" id="shuffleBtn" onclick="toggleShuffle()">
-                <div class="icon">🔀</div>
-                <div class="label">Shuffle</div>
-            </div>
-            
-            <!-- Repeat -->
-            <div class="controller-btn" id="repeatBtn" onclick="toggleRepeat()">
-                <div class="icon">🔁</div>
-                <div class="label">Repeat</div>
-            </div>
-            
-            <!-- Queue -->
-            <div class="controller-btn" onclick="toggleQueue()">
-                <div class="icon">📋</div>
-                <div class="label">Queue</div>
-            </div>
-            
-            <!-- Main Play/Pause Button -->
-            <div class="controller-btn play-pause" id="playBtn" onclick="togglePlay()">
-                <div class="icon">▶</div>
-                <div class="label">Play / Pause</div>
-            </div>
-        </div>
-        
-        <!-- Volume Control -->
-        <div class="volume-control">
-            <div class="icon">🔊</div>
-            <input type="range" id="volume" min="0" max="100" step="1" value="80" oninput="setVolume(this.value)">
-        </div>
-    </div>
+    <img id="pThumb" class="p-thumb" src="">
     
-    <!-- Right Side - Thumbnail and Info -->
-    <div class="player-right" onclick="toggleExpand()">
-        <div class="thumbnail-container">
-            <img id="pThumb" class="p-thumb" src="">
-            <div class="thumbnail-overlay">
-                <div class="player-info">
-                    <div id="pTitle">Select a Track</div>
-                    <div id="pArtist">VoFo Music</div>
-                </div>
-            </div>
+    <div class="player-info">
+        <div id="pTitle">...</div>
+        <div id="pArtist">...</div>
+    </div>
+
+    <div class="player-center" style="display:flex; flex-direction:column; align-items:center; width:100%;">
+        <div class="controls-main">
+            <button style="background:none; border:none; color:white; font-size:20px; cursor:pointer;" onclick="event.stopPropagation(); skipPrev()">⏮</button>
+            <button class="play-trigger" id="playBtn" onclick="event.stopPropagation(); togglePlay()">▶</button>
+            <button style="background:none; border:none; color:white; font-size:20px; cursor:pointer;" onclick="event.stopPropagation(); skipNext()">⏭</button>
+            <div id="likeBtn" onclick="event.stopPropagation(); toggleLikeCurrent()">❤</div>
         </div>
-        
-        <!-- Progress Bar -->
-        <div class="progress-section">
-            <div class="progress-container">
-                <span id="curTime">0:00</span>
-                <input type="range" id="progress" value="0" step="1" oninput="seek(this.value)">
-                <span id="durTime">0:00</span>
-            </div>
+        <div class="progress-container">
+            <span id="curTime">0:00</span>
+            <input type="range" id="progress" value="0" step="1" onclick="event.stopPropagation()" oninput="seek(this.value)">
+            <span id="durTime">0:00</span>
         </div>
     </div>
 </div>
@@ -1000,8 +768,6 @@
 <script>
     let player, currentUser = null, isLoginMode = true;
     let currentPlaylist = [], currentIndex = -1;
-    let isShuffle = false, isRepeat = false;
-    let originalPlaylist = [];
 
     window.onload = () => {
         const savedUser = localStorage.getItem('vofo_user');
@@ -1035,22 +801,16 @@
             playerVars: { 'autoplay': 1, 'controls': 0, 'playsinline': 1 },
             events: {
                 'onStateChange': (e) => {
-                    const playBtn = document.querySelector('#playBtn .icon');
+                    const playBtn = document.getElementById('playBtn');
                     const silentAudio = document.getElementById('silent-no-gap');
                     if (e.data === YT.PlayerState.PLAYING) {
-                        playBtn.innerText = "❚❚";
+                        playBtn.innerText = "||";
                         silentAudio.play().catch(() => {});
                     } else {
                         playBtn.innerText = "▶";
                         silentAudio.pause();
                     }
-                    if(e.data === YT.PlayerState.ENDED) {
-                        if(isRepeat) {
-                            playSong(currentIndex);
-                        } else {
-                            skipNext();
-                        }
-                    }
+                    if(e.data === YT.PlayerState.ENDED) skipNext();
                 }
             }
         });
@@ -1108,6 +868,7 @@
         }
     }
 
+    // Rest of your functions remain the same...
     function toggleAuth() {
         isLoginMode = !isLoginMode;
         const authBtn = document.querySelector('.auth-btn');
@@ -1148,39 +909,12 @@
 
     function togglePlay() {
         const state = player.getPlayerState();
-        const playBtn = document.querySelector('#playBtn .icon');
-        if (state === YT.PlayerState.PLAYING) {
-            player.pauseVideo();
-            playBtn.innerText = "▶";
-        } else {
-            player.playVideo();
-            playBtn.innerText = "❚❚";
-        }
+        state === YT.PlayerState.PLAYING ? player.pauseVideo() : player.playVideo();
     }
 
-    function skipNext() {
-        if (currentIndex < currentPlaylist.length - 1) {
-            playSong(currentIndex + 1);
-        } else if (isRepeat) {
-            playSong(0);
-        }
-    }
-    
-    function skipPrev() {
-        if (currentIndex > 0) {
-            playSong(currentIndex - 1);
-        } else if (isRepeat) {
-            playSong(currentPlaylist.length - 1);
-        }
-    }
-    
-    function seek(val) { 
-        player.seekTo((val / 100) * player.getDuration()); 
-    }
-    
-    function setVolume(val) {
-        player.setVolume(val);
-    }
+    function skipNext() { if(currentIndex < currentPlaylist.length - 1) playSong(currentIndex + 1); }
+    function skipPrev() { if(currentIndex > 0) playSong(currentIndex - 1); }
+    function seek(val) { player.seekTo((val / 100) * player.getDuration()); }
 
     function updateUI() {
         if(player && player.getDuration) {
@@ -1241,41 +975,7 @@
 
     function startPlaylist(index, tracks) {
         currentPlaylist = tracks;
-        originalPlaylist = [...tracks];
         playSong(index);
-    }
-
-    function toggleShuffle() {
-        isShuffle = !isShuffle;
-        const shuffleBtn = document.getElementById('shuffleBtn');
-        
-        if (isShuffle) {
-            shuffleBtn.classList.add('liked');
-            // Shuffle the playlist
-            const shuffled = [...currentPlaylist];
-            for (let i = shuffled.length - 1; i > 0; i--) {
-                const j = Math.floor(Math.random() * (i + 1));
-                [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-            }
-            currentPlaylist = shuffled;
-        } else {
-            shuffleBtn.classList.remove('liked');
-            // Restore original order
-            currentPlaylist = [...originalPlaylist];
-        }
-    }
-    
-    function toggleRepeat() {
-        isRepeat = !isRepeat;
-        const repeatBtn = document.getElementById('repeatBtn');
-        repeatBtn.classList.toggle('liked', isRepeat);
-    }
-    
-    function toggleQueue() {
-        // For now, just alert - you can implement a queue view later
-        alert(`Queue (${currentPlaylist.length} tracks)\n\n${currentPlaylist.map((t, i) => 
-            `${i === currentIndex ? '▶ ' : ''}${i + 1}. ${t.title} - ${t.artist}`
-        ).join('\n')}`);
     }
 
     function switchTab(tab) {
@@ -1286,13 +986,11 @@
         if(tab==='library') fetchLiked();
     }
 
-    function toggleExpand() { 
-        if(window.innerWidth < 1024) {
-            document.getElementById('playerBar').classList.add('expanded');
-        }
+    function toggleExpand(e) { 
+        if(window.innerWidth < 800) document.getElementById('playerBar').classList.add('expanded'); 
     }
-    
-    function closeExpand() { 
+    function closeExpand(e) { 
+        e.stopPropagation(); 
         document.getElementById('playerBar').classList.remove('expanded'); 
     }
 
@@ -1341,8 +1039,7 @@
             const res = await fetch(`/api/liked/${currentUser.user_id}`);
             const data = await res.json();
             const isLiked = data.some(s => s.id === id);
-            const likeBtn = document.getElementById('likeBtn');
-            likeBtn.classList.toggle('liked', isLiked);
+            document.getElementById('likeBtn').classList.toggle('liked', isLiked);
         } catch (error) {
             console.error('Check liked error:', error);
         }
