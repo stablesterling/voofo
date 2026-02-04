@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>VoFo Music | Immersive Session</title>
     <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=Montserrat:wght@300;400;500;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         :root { --bg: #0d0d0d; --gold: #c5a367; --soft: #e5e5e5; --muted: #666666; --serif: 'Cormorant Garamond', serif; --sans: 'Montserrat', sans-serif; }
         * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
@@ -77,19 +76,6 @@
         #likeBtn { font-size: 20px; color: var(--muted); cursor: pointer; transition: 0.3s; padding: 5px; }
         #likeBtn.liked { color: #ff4b2b; transform: scale(1.1); }
 
-        /* Loading indicator */
-        .loading { text-align: center; padding: 40px; color: var(--muted); }
-        .loading::after { content: "..."; animation: dots 1.5s infinite; }
-        
-        @keyframes dots {
-            0%, 20% { content: "."; }
-            40% { content: ".."; }
-            60%, 100% { content: "..."; }
-        }
-
-        /* Error message */
-        .error-message { text-align: center; padding: 20px; color: #ff4b2b; }
-
         /* Responsiveness */
         @media (max-width: 600px) {
             .player-info { flex: 2; }
@@ -108,19 +94,10 @@
 <div id="authScreen" class="auth-container">
     <div id="loginForm" class="auth-card">
         <div class="vofo-logo">VoFo</div>
-        <input type="text" id="lUser" placeholder="Username">
-        <input type="password" id="lPass" placeholder="Password">
+        <input type="text" id="lUser" placeholder="IDENTITY">
+        <input type="password" id="lPass" placeholder="ENCRYPTION">
         <button class="auth-btn" onclick="handleAuth()">Initialize</button>
         <p style="font-size:10px; margin-top:20px; cursor:pointer; color:var(--muted)" onclick="toggleAuth()">CREATE ACCOUNT</p>
-    </div>
-    
-    <div id="registerForm" class="auth-card" style="display: none;">
-        <div class="vofo-logo">VoFo</div>
-        <input type="text" id="rUser" placeholder="Username">
-        <input type="password" id="rPass" placeholder="Password">
-        <input type="password" id="rPass2" placeholder="Confirm Password">
-        <button class="auth-btn" onclick="handleRegister()">Register</button>
-        <p style="font-size:10px; margin-top:20px; cursor:pointer; color:var(--muted)" onclick="toggleAuth()">BACK TO LOGIN</p>
     </div>
 </div>
 
@@ -128,9 +105,9 @@
     <nav>
         <div style="font-family: var(--serif); color:var(--gold); font-size: 20px; letter-spacing: 3px;">VOFO</div>
         <div class="nav-links">
-            <span id="navExplore" class="active" onclick="switchTab('explore')">Explore</span>
+            <span id="navExplore" class="active" onclick="switchTab('explore')">Frequency</span>
             <span id="navLibrary" onclick="switchTab('library')">Liked</span>
-            <span onclick="handleLogout()" style="color:#ff4b2b">Logout</span>
+            <span onclick="handleLogout()" style="color:#ff4b2b">Exit</span>
         </div>
     </nav>
 
@@ -177,79 +154,58 @@
 
 <script src="https://www.youtube.com/iframe_api"></script>
 <script>
-    // Global variables
-    let player = null;
-    let currentUser = null;
-    let isLoginMode = true;
-    let currentPlaylist = [];
-    let currentIndex = -1;
-    let likedSongsCache = [];
+    let player, currentUser = null, isLoginMode = true;
+    let currentPlaylist = [], currentIndex = -1;
 
-    // Initialize on page load
     window.onload = () => {
         const savedUser = localStorage.getItem('vofo_user');
         if (savedUser) {
-            try {
-                currentUser = JSON.parse(savedUser);
-                document.getElementById('authScreen').classList.add('hidden');
-                document.getElementById('app').classList.remove('hidden');
-                fetchTrending();
-            } catch (e) {
-                console.error("Error parsing saved user:", e);
-                localStorage.removeItem('vofo_user');
-            }
+            currentUser = JSON.parse(savedUser);
+            document.getElementById('authScreen').classList.add('hidden');
+            document.getElementById('app').classList.remove('hidden');
+            fetchTrending();
         }
     };
 
-    // YouTube Player API
     function onYouTubeIframeAPIReady() {
         player = new YT.Player('yt-player', {
-            playerVars: { 
-                'autoplay': 1, 
-                'controls': 0, 
-                'playsinline': 1,
-                'modestbranding': 1,
-                'rel': 0
-            },
+            playerVars: { 'autoplay': 1, 'controls': 0, 'playsinline': 1 },
             events: {
-                'onReady': onPlayerReady,
-                'onStateChange': onPlayerStateChange
+                'onStateChange': (e) => {
+                    const playBtn = document.getElementById('playBtn');
+                    const silentAudio = document.getElementById('silent-no-gap');
+                    if (e.data === YT.PlayerState.PLAYING) {
+                        playBtn.innerText = "||";
+                        silentAudio.play().catch(() => {});
+                    } else {
+                        playBtn.innerText = "▶";
+                        silentAudio.pause();
+                    }
+                    if(e.data === YT.PlayerState.ENDED) skipNext();
+                }
             }
         });
-    }
-
-    function onPlayerReady(event) {
-        console.log("YouTube player ready");
         setInterval(updateUI, 1000);
     }
 
-    function onPlayerStateChange(event) {
-        const playBtn = document.getElementById('playBtn');
-        const silentAudio = document.getElementById('silent-no-gap');
+    function playSong(index) {
+        currentIndex = index;
+        const song = currentPlaylist[index];
+        document.getElementById('playerBar').classList.remove('hidden');
+        document.getElementById('pTitle').innerText = song.title;
+        document.getElementById('pArtist').innerText = song.artist;
+        document.getElementById('pThumb').src = song.thumbnail;
+        document.getElementById('bg-blur').style.backgroundImage = `url('${song.thumbnail}')`;
         
-        if (event.data === YT.PlayerState.PLAYING) {
-            playBtn.innerText = "||";
-            try {
-                silentAudio.play().catch(e => console.log("Silent audio error:", e));
-            } catch (e) {}
-        } else {
-            playBtn.innerText = "▶";
-            silentAudio.pause();
-        }
-        
-        if(event.data === YT.PlayerState.ENDED) {
-            skipNext();
-        }
+        player.loadVideoById(song.id);
+        checkIfLiked(song.id);
 
-        // Update media session for mobile devices
-        if ('mediaSession' in navigator && currentIndex >= 0) {
-            const song = currentPlaylist[currentIndex];
+        if ('mediaSession' in navigator) {
             navigator.mediaSession.metadata = new MediaMetadata({
                 title: song.title,
                 artist: song.artist,
                 artwork: [{ src: song.thumbnail, sizes: '512x512', type: 'image/jpeg' }]
             });
-            
             navigator.mediaSession.setActionHandler('play', () => togglePlay());
             navigator.mediaSession.setActionHandler('pause', () => togglePlay());
             navigator.mediaSession.setActionHandler('previoustrack', () => skipPrev());
@@ -257,145 +213,52 @@
         }
     }
 
-    // Authentication functions
-    function toggleAuth() {
-        isLoginMode = !isLoginMode;
-        const loginForm = document.getElementById('loginForm');
-        const registerForm = document.getElementById('registerForm');
-        
-        if (isLoginMode) {
-            loginForm.style.display = 'block';
-            registerForm.style.display = 'none';
-        } else {
-            loginForm.style.display = 'none';
-            registerForm.style.display = 'block';
-        }
+    function togglePlay() {
+        const state = player.getPlayerState();
+        state === YT.PlayerState.PLAYING ? player.pauseVideo() : player.playVideo();
     }
 
-    async function handleAuth() {
-        const username = document.getElementById('lUser').value.trim();
-        const password = document.getElementById('lPass').value.trim();
-        
-        if (!username || !password) {
-            alert('Please enter both username and password');
-            return;
-        }
+    function skipNext() { if(currentIndex < currentPlaylist.length - 1) playSong(currentIndex + 1); }
+    function skipPrev() { if(currentIndex > 0) playSong(currentIndex - 1); }
+    function seek(val) { player.seekTo((val / 100) * player.getDuration()); }
 
-        try {
-            const response = await fetch('/api/login', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({username: username, password: password})
-            });
-            
-            const data = await response.json();
-            
-            if (response.ok && data.success) {
-                currentUser = {
-                    user_id: data.user_id,
-                    username: data.username
-                };
-                localStorage.setItem('vofo_user', JSON.stringify(currentUser));
-                document.getElementById('authScreen').classList.add('hidden');
-                document.getElementById('app').classList.remove('hidden');
-                fetchTrending();
-            } else {
-                alert(data.detail || 'Login failed');
+    function updateUI() {
+        if(player && player.getDuration) {
+            const cur = player.getCurrentTime();
+            const dur = player.getDuration();
+            if(dur > 0) {
+                document.getElementById('progress').value = (cur / dur) * 100;
+                document.getElementById('curTime').innerText = formatTime(cur);
+                document.getElementById('durTime').innerText = formatTime(dur);
             }
-        } catch (error) {
-            console.error('Login error:', error);
-            alert('Network error. Please try again.');
         }
     }
 
-    async function handleRegister() {
-        const username = document.getElementById('rUser').value.trim();
-        const password = document.getElementById('rPass').value.trim();
-        const password2 = document.getElementById('rPass2').value.trim();
-        
-        if (!username || !password) {
-            alert('Please enter both username and password');
-            return;
-        }
-        
-        if (password !== password2) {
-            alert('Passwords do not match');
-            return;
-        }
-
-        try {
-            const response = await fetch('/api/register', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({username: username, password: password})
-            });
-            
-            const data = await response.json();
-            
-            if (response.ok && data.success) {
-                alert('Account created successfully! Please login.');
-                toggleAuth();
-            } else {
-                alert(data.detail || 'Registration failed');
-            }
-        } catch (error) {
-            console.error('Registration error:', error);
-            alert('Network error. Please try again.');
-        }
-    }
-
-    function handleLogout() {
-        localStorage.removeItem('vofo_user');
-        location.reload();
-    }
-
-    // Music functions
-    async function fetchTrending() {
-        const resultsDiv = document.getElementById('results');
-        resultsDiv.innerHTML = '<div class="loading">Loading trending music</div>';
-        
-        try {
-            const response = await fetch('/api/trending');
-            const data = await response.json();
-            renderTracks(data, 'results');
-        } catch (error) {
-            console.error('Error fetching trending:', error);
-            resultsDiv.innerHTML = '<div class="error-message">Failed to load trending music</div>';
-        }
+    function formatTime(s) {
+        const min = Math.floor(s / 60);
+        const sec = Math.floor(s % 60);
+        return `${min}:${sec < 10 ? '0' : ''}${sec}`;
     }
 
     async function doSearch() {
-        const query = document.getElementById('searchInput').value.trim();
-        if (!query) return;
-        
-        const resultsDiv = document.getElementById('results');
-        resultsDiv.innerHTML = '<div class="loading">Searching</div>';
-        
-        try {
-            const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
-            const data = await response.json();
-            renderTracks(data, 'results');
-        } catch (error) {
-            console.error('Search error:', error);
-            resultsDiv.innerHTML = '<div class="error-message">Search failed. Please try again.</div>';
-        }
+        const q = document.getElementById('searchInput').value;
+        if(!q) return;
+        const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+        const data = await res.json();
+        renderTracks(data, 'results');
+    }
+
+    async function fetchTrending() {
+        const res = await fetch('/api/trending');
+        const data = await res.json();
+        renderTracks(data, 'results');
     }
 
     function renderTracks(tracks, target) {
-        const container = document.getElementById(target);
-        
-        if (!tracks || tracks.length === 0) {
-            container.innerHTML = '<div class="error-message">No tracks found</div>';
-            return;
-        }
-        
-        container.innerHTML = tracks.map((track, index) => `
-            <div class="track" onclick='startPlaylist(${index}, ${JSON.stringify(tracks).replace(/'/g, "\\'")})'>
-                <img src="${track.thumbnail}" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 fill=%22%23333%22/><text x=%2250%22 y=%2255%22 text-anchor=%22middle%22 fill=%22%23fff%22 font-size=%2220%22>♫</text></svg>'">
-                <div class="track-meta">
-                    <div>${track.title || 'Unknown Title'}</div>
-                    <div>${track.artist || 'Unknown Artist'}</div>
-                </div>
+        document.getElementById(target).innerHTML = tracks.map((s, i) => `
+            <div class="track" onclick='startPlaylist(${i}, ${JSON.stringify(tracks).replace(/'/g, "&apos;")})'>
+                <img src="${s.thumbnail}">
+                <div class="track-meta"><div>${s.title}</div><div>${s.artist}</div></div>
             </div>
         `).join('');
     }
@@ -405,186 +268,75 @@
         playSong(index);
     }
 
-    function playSong(index) {
-        currentIndex = index;
-        const song = currentPlaylist[index];
-        
-        // Update UI
-        document.getElementById('playerBar').classList.remove('hidden');
-        document.getElementById('pTitle').innerText = song.title;
-        document.getElementById('pArtist').innerText = song.artist;
-        document.getElementById('pThumb').src = song.thumbnail;
-        document.getElementById('bg-blur').style.backgroundImage = `url('${song.thumbnail}')`;
-        
-        // Load and play the YouTube video
-        if (player && player.loadVideoById) {
-            player.loadVideoById(song.id);
-        }
-        
-        // Check if song is liked
-        checkIfLiked(song.id);
-    }
-
-    function togglePlay() {
-        if (!player) return;
-        
-        const state = player.getPlayerState ? player.getPlayerState() : -1;
-        if (state === YT.PlayerState.PLAYING) {
-            player.pauseVideo();
-        } else {
-            player.playVideo();
-        }
-    }
-
-    function skipNext() {
-        if (currentIndex < currentPlaylist.length - 1) {
-            playSong(currentIndex + 1);
-        }
-    }
-
-    function skipPrev() {
-        if (currentIndex > 0) {
-            playSong(currentIndex - 1);
-        }
-    }
-
-    function seek(val) {
-        if (!player || !player.seekTo) return;
-        const duration = player.getDuration ? player.getDuration() : 100;
-        player.seekTo((val / 100) * duration);
-    }
-
-    function updateUI() {
-        if (!player || !player.getCurrentTime || !player.getDuration) return;
-        
-        try {
-            const cur = player.getCurrentTime();
-            const dur = player.getDuration();
-            
-            if (dur > 0) {
-                document.getElementById('progress').value = (cur / dur) * 100;
-                document.getElementById('curTime').innerText = formatTime(cur);
-                document.getElementById('durTime').innerText = formatTime(dur);
-            }
-        } catch (e) {
-            // Player might not be ready yet
-        }
-    }
-
-    function formatTime(seconds) {
-        if (isNaN(seconds)) return "0:00";
-        const min = Math.floor(seconds / 60);
-        const sec = Math.floor(seconds % 60);
-        return `${min}:${sec < 10 ? '0' : ''}${sec}`;
+    function switchTab(tab) {
+        document.getElementById('exploreTab').classList.toggle('hidden', tab!=='explore');
+        document.getElementById('libraryTab').classList.toggle('hidden', tab!=='library');
+        document.getElementById('navExplore').classList.toggle('active', tab==='explore');
+        document.getElementById('navLibrary').classList.toggle('active', tab==='library');
+        if(tab==='library') fetchLiked();
     }
 
     function toggleExpand(e) { 
-        if (window.innerWidth < 800) {
-            document.getElementById('playerBar').classList.add('expanded'); 
-        }
+        if(window.innerWidth < 800) document.getElementById('playerBar').classList.add('expanded'); 
     }
-    
     function closeExpand(e) { 
         e.stopPropagation(); 
         document.getElementById('playerBar').classList.remove('expanded'); 
     }
 
-    function switchTab(tab) {
-        // Update active tab
-        document.getElementById('exploreTab').classList.toggle('hidden', tab !== 'explore');
-        document.getElementById('libraryTab').classList.toggle('hidden', tab !== 'library');
-        document.getElementById('navExplore').classList.toggle('active', tab === 'explore');
-        document.getElementById('navLibrary').classList.toggle('active', tab === 'library');
-        
-        // Load data for the tab
-        if (tab === 'library') {
-            fetchLiked();
-        } else if (tab === 'explore') {
-            if (document.getElementById('results').innerHTML === '') {
-                fetchTrending();
-            }
+    async function handleAuth() {
+        const u = document.getElementById('lUser').value;
+        const p = document.getElementById('lPass').value;
+        const res = await fetch(isLoginMode ? '/api/login' : '/api/register', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({username: u, password: p})
+        });
+        const data = await res.json();
+        if(data.success) {
+            if(isLoginMode) {
+                currentUser = data;
+                localStorage.setItem('vofo_user', JSON.stringify(data));
+                location.reload();
+            } else { alert("Account Created!"); toggleAuth(); }
         }
     }
 
-    // Like functionality
+    function toggleAuth() {
+        isLoginMode = !isLoginMode;
+        document.querySelector('#loginForm .auth-btn').innerText = isLoginMode ? "Initialize" : "Register";
+    }
+
+    function handleLogout() { localStorage.removeItem('vofo_user'); location.reload(); }
+
     async function toggleLikeCurrent() {
-        if (currentIndex === -1 || !currentUser) return;
-        
         const song = currentPlaylist[currentIndex];
-        await toggleLike(song);
-    }
-
-    async function toggleLike(song) {
-        if (!currentUser) return;
-        
-        try {
-            const response = await fetch('/api/like', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    user_id: currentUser.user_id,
-                    song_id: song.id,
-                    title: song.title,
-                    artist: song.artist,
-                    thumbnail: song.thumbnail
-                })
-            });
-            
-            const data = await response.json();
-            document.getElementById('likeBtn').classList.toggle('liked', data.status === 'liked');
-            
-            // Refresh liked songs if we're on the library tab
-            if (!document.getElementById('libraryTab').classList.contains('hidden')) {
-                fetchLiked();
-            }
-        } catch (error) {
-            console.error('Error toggling like:', error);
-        }
+        const res = await fetch('/api/like', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                user_id: currentUser.user_id, song_id: song.id,
+                title: song.title, artist: song.artist, thumbnail: song.thumbnail
+            })
+        });
+        const data = await res.json();
+        document.getElementById('likeBtn').classList.toggle('liked', data.status === 'liked');
+        if(document.getElementById('libraryTab').classList.contains('hidden') === false) fetchLiked();
     }
 
     async function checkIfLiked(id) {
-        if (!currentUser) return;
-        
-        try {
-            const response = await fetch(`/api/liked/${currentUser.user_id}`);
-            const data = await response.json();
-            const isLiked = data.some(s => s.id === id);
-            document.getElementById('likeBtn').classList.toggle('liked', isLiked);
-        } catch (error) {
-            console.error('Error checking liked status:', error);
-        }
+        const res = await fetch(`/api/liked/${currentUser.user_id}`);
+        const data = await res.json();
+        const isLiked = data.some(s => s.id === id);
+        document.getElementById('likeBtn').classList.toggle('liked', isLiked);
     }
 
     async function fetchLiked() {
-        if (!currentUser) return;
-        
-        const libraryResults = document.getElementById('libraryResults');
-        libraryResults.innerHTML = '<div class="loading">Loading your collection</div>';
-        
-        try {
-            const response = await fetch(`/api/liked/${currentUser.user_id}`);
-            let data = await response.json();
-            
-            // Reverse to show newest first
-            data.reverse();
-            
-            if (data.length === 0) {
-                libraryResults.innerHTML = '<div class="error-message">No liked songs yet. Like songs while listening to add them here.</div>';
-            } else {
-                renderTracks(data, 'libraryResults');
-            }
-        } catch (error) {
-            console.error('Error fetching liked songs:', error);
-            libraryResults.innerHTML = '<div class="error-message">Failed to load your collection</div>';
-        }
+        const res = await fetch(`/api/liked/${currentUser.user_id}`);
+        let data = await res.json();
+        data.reverse(); // Ensures last liked is on top
+        renderTracks(data, 'libraryResults');
     }
-
-    // Handle keyboard events for search
-    document.getElementById('searchInput')?.addEventListener('keypress', function(e) {
-        if (e.key === 'Enter') {
-            doSearch();
-        }
-    });
 </script>
 </body>
 </html>
