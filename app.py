@@ -4,18 +4,25 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from sqlalchemy import create_engine, Column, Integer, String, ForeignKey
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import sessionmaker, Session, declarative_base
 from ytmusicapi import YTMusic
 from pathlib import Path
 
 # --- DATABASE SETUP ---
-DB_URL = "postgresql://vofodb_user:Y7MQfAWwEtsiHQLiGHFV7ikOI2ruTv3u@dpg-d5lm4ongi27c7390kq40-a/vofodb"
-engine = create_engine(DB_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
+# Render provides DATABASE_URL. If not found, it uses your provided internal URL.
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://vofodb_user:Y7MQfAWwEtsiHQLiGHFV7ikOI2ruTv3u@dpg-d5lm4ongi27c7390kq40-a/vofodb")
+
+# Fix: SQLAlchemy 2.0 requires 'postgresql://' but some platforms provide 'postgres://'
+if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+try:
+    engine = create_engine(DATABASE_URL)
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    Base = declarative_base()
+except Exception as e:
+    print(f"Database Connection Error: {e}")
 
 # --- MODELS ---
 class User(Base):
@@ -33,12 +40,13 @@ class LikedSong(Base):
     artist = Column(String)
     thumbnail = Column(String)
 
+# Create tables if they don't exist
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 yt = YTMusic()
 
-# Enable CORS for all origins (Important for Mobile WebViews)
+# Enable CORS for Mobile WebViews and external pings
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -47,14 +55,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Define the base directory to find index.html reliably
 BASE_DIR = Path(__file__).resolve().parent
 
 # --- AUTH HELPERS ---
 def hash_password(password: str) -> str:
     salt = bcrypt.gensalt()
-    hashed = bcrypt.hashpw(password.encode('utf-8'), salt)
-    return hashed.decode('utf-8')
+    return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
 
 def verify_password(password: str, hashed: str) -> bool:
     return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
@@ -129,13 +135,13 @@ async def search(q: str):
     except Exception:
         return []
 
-# --- SERVING THE FRONTEND ---
-@app.get("/")
+# --- SERVING THE FRONTEND & PING SUPPORT ---
+# Added "HEAD" method to allow UptimeRobot to check status without 405 error
+@app.api_route("/", methods=["GET", "HEAD"])
 async def serve_home():
-    # Use FileResponse for better efficiency and automatic media_type detection
     html_file = BASE_DIR / "index.html"
     if not html_file.exists():
-        return HTMLResponse(content="<h1>index.html not found on server</h1>", status_code=404)
+        return HTMLResponse(content="<h1>index.html not found</h1>", status_code=404)
     return FileResponse(html_file)
 
 if __name__ == "__main__":
